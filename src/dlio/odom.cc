@@ -43,7 +43,6 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   omp_set_dynamic(0);
   omp_set_nested(0);
   omp_set_max_active_levels(1);
-  this->num_threads_ = omp_get_max_threads();
   std::cout << "hardware_threads: " << hardware_threads
             << " | pool: " << thread_pool.get_thread_count()
             << " | omp: " << omp_threads << std::endl;
@@ -219,10 +218,12 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
   file = fopen("/proc/cpuinfo", "r");
   this->numProcessors = 0;
-  while(fgets(line, 128, file) != nullptr) {
+  if (file) {
+    while(fgets(line, 128, file) != nullptr) {
       if (strncmp(line, "processor", 9) == 0) this->numProcessors++;
+    }
+    fclose(file);
   }
-  fclose(file);
 
 }
 
@@ -1340,25 +1341,30 @@ dlio::OdomNode::integrateImu(double start_time, Eigen::Quaternionf q_init, Eigen
   // IMU data in imu_buffer is already bias-corrected, so use zero bias in the pim.
   pim_->resetIntegrationAndSetBias(Pim::Vec10::Zero());
 
-  // Feed IMU measurements into the pim, capturing SE3 at each requested timestamp.
+  // Feed IMU measurements into the pim, interpolating SE3 at each requested timestamp.
   std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>> imu_se3;
   imu_se3.reserve(sorted_timestamps.size());
 
   auto stamp_it = sorted_timestamps.begin();
-  auto imu_prev = begin_imu_it;
-  auto imu_curr = imu_prev + 1;
 
-  const Eigen::Matrix3f R_init = q_init.toRotationMatrix();
-
-  // If start_time is before the first IMU sample, output identity for timestamps before it.
-  while (stamp_it != sorted_timestamps.end() && *stamp_it <= imu_prev->stamp) {
+  // Output identity for timestamps before the first IMU sample.
+  while (stamp_it != sorted_timestamps.end() && *stamp_it <= begin_imu_it->stamp) {
     imu_se3.emplace_back(Eigen::Matrix4f::Identity());
     ++stamp_it;
   }
 
-  for (; imu_curr != end_imu_it; ++imu_curr) {
+  const Eigen::Matrix3d R_init = q_init.toRotationMatrix().cast<double>();
+  const Eigen::Vector3d P_init = p_init.cast<double>();
+  auto imu_prev = begin_imu_it;
+
+  for (auto imu_curr = imu_prev + 1; imu_curr != end_imu_it; ++imu_curr) {
     const ImuMeas& m = *imu_curr;
     const double dt = m.dt;
+    const double t0 = imu_prev->stamp;
+
+    // Save delta at start of this IMU interval (for interpolation).
+    const Eigen::Matrix3d dR0 = pim_->deltaRij();
+    const Eigen::Vector3d dP0 = pim_->deltaPij();
 
     // Feed bias-corrected IMU data: accel in m/s², gyro in rad/s
     pim_->integrateMeasurement(
@@ -1366,12 +1372,22 @@ dlio::OdomNode::integrateImu(double start_time, Eigen::Quaternionf q_init, Eigen
         Eigen::Vector3d(m.ang_vel[0], m.ang_vel[1], m.ang_vel[2]),
         dt);
 
-    // Output absolute world-frame SE3 for any timestamps in this IMU interval.
+    const Eigen::Matrix3d dR1 = pim_->deltaRij();
+    const Eigen::Vector3d dP1 = pim_->deltaPij();
+
+    // Pre-compute quaternions for slerp interpolation.
+    const Eigen::Quaterniond q0(dR0);
+    const Eigen::Quaterniond q1(dR1);
+
+    // Output absolute world-frame SE3 for timestamps in this IMU interval,
+    // using linear interpolation for position and slerp for rotation.
     while (stamp_it != sorted_timestamps.end() && *stamp_it <= m.stamp) {
-      // Compose initial pose (world) with relative delta (body frame) to get absolute SE3.
+      const double alpha = (*stamp_it - t0) / dt;
+      const double a = std::max(0.0, std::min(1.0, alpha));  // clamp
+
       Eigen::Matrix4f T = Eigen::Matrix4f::Identity();
-      T.block<3,3>(0,0) = R_init * pim_->deltaRij().cast<float>();
-      T.block<3,1>(0,3) = p_init + R_init * pim_->deltaPij().cast<float>();
+      T.block<3,3>(0,0) = (R_init * q0.slerp(a, q1).toRotationMatrix()).cast<float>();
+      T.block<3,1>(0,3) = (P_init + R_init * (dP0 + a * (dP1 - dP0))).cast<float>();
       imu_se3.emplace_back(T);
       ++stamp_it;
     }

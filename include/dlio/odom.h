@@ -346,7 +346,6 @@ private:
 
   // Parameters
   std::string version_;
-  int num_threads_;
 
   bool deskew_;
 
