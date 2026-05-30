@@ -12,7 +12,7 @@
 #pragma once
 
 #include "dlio/dlio.h"
-#include "dlio/BS_thread_pool.hpp"
+#include "dlio/thread_pool.hpp"
 
 // ROS
 #include "rclcpp/rclcpp.hpp"

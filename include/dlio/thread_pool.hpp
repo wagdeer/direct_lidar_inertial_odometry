@@ -5,7 +5,8 @@
  * ██   ██      ██ ██ ██    ██    ██   ██ ██   ██ ██      ██   ██ ██   ██         ██      ██    ██ ██    ██ ██
  * ██████  ███████          ██    ██   ██ ██   ██ ███████ ██   ██ ██████  ███████ ██       ██████   ██████  ███████
  *
- * @file BS_thread_pool.hpp
+ * @file thread_pool.hpp
+ * @note Vendored third-party header (upstream: BS_thread_pool.hpp v5.0.0).
  * @author Barak Shoshany (baraksh@gmail.com) (https://baraksh.com/)
  * @version 5.0.0
  * @date 2024-12-19
@@ -14,8 +15,7 @@
  * @brief `BS::thread_pool`: a fast, lightweight, modern, and easy-to-use C++17/C++20/C++23 thread pool library. This header file contains the entire library, and is the only file needed to use the library.
  */
 
-#ifndef BS_THREAD_POOL_HPP
-#define BS_THREAD_POOL_HPP
+#pragma once
 
 // We need to include <version> since if we're using `import std` it will not define any feature-test macros, including `__cpp_lib_modules`, which we need to check if `import std` is supported in the first place.
 #ifdef __has_include
@@ -2370,4 +2370,3 @@ private:
 using binary_semaphore = counting_semaphore<1>;
 #endif
 } // namespace BS
-#endif // BS_THREAD_POOL_HPP
