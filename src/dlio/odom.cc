@@ -895,29 +895,44 @@ void dlio::OdomNode::deskewPointcloud() {
   // update prior to be the estimated pose at the median time of the scan (corresponds to this->scan_stamp)
   this->T_prior = frames[median_pt_index];
 
-  const BS::multi_future<void> loop_future = thread_pool.submit_loop(0, timestamps.size(),
-      [this, &deskewed_scan_, &frames, &unique_time_indices](const std::size_t i) {
-        if (i >= frames.size() || i >= unique_time_indices.size() - 1) {
-          RCLCPP_FATAL(this->get_logger(),"Index out of bounds in loop_future");
-          return;
-        }
-        Eigen::Matrix4f T = frames[i] * this->extrinsics.baselink2lidar_T;
+  const std::size_t segment_count = timestamps.size();
+  const std::size_t point_count = deskewed_scan_->points.size();
+  const std::size_t pool_threads = std::max<std::size_t>(1, thread_pool.get_thread_count());
+  constexpr std::size_t kMinPointsPerBlock = 4096;
+  const std::size_t blocks_by_points = std::max<std::size_t>(1, (point_count + kMinPointsPerBlock - 1) / kMinPointsPerBlock);
+  const std::size_t num_blocks = std::min(segment_count, std::min(pool_threads, blocks_by_points));
 
-        int start_idx = unique_time_indices[i];
-        int end_idx = unique_time_indices[i+1];
-        if (start_idx < 0 || end_idx > deskewed_scan_->points.size() || start_idx >= end_idx) {
-          RCLCPP_FATAL(this->get_logger(),"Index out of bounds in deskewPointcloud");
-          return;
-        }
+  auto transform_segment = [this, &deskewed_scan_, &frames, &unique_time_indices](const std::size_t i) {
+    if (i >= frames.size() || i >= unique_time_indices.size() - 1) {
+      RCLCPP_FATAL(this->get_logger(),"Index out of bounds in deskew loop");
+      return;
+    }
 
-        // transform point to world frame
-        for (int k = start_idx; k < end_idx; k++) {
-          auto &pt = deskewed_scan_->points[k];
-          pt.getVector4fMap()[3] = 1.;
-          pt.getVector4fMap() = T * pt.getVector4fMap();
-        }
-      });
-  loop_future.wait();
+    const Eigen::Matrix4f T = frames[i] * this->extrinsics.baselink2lidar_T;
+    const int start_idx = unique_time_indices[i];
+    const int end_idx = unique_time_indices[i + 1];
+    if (start_idx < 0 || end_idx > static_cast<int>(deskewed_scan_->points.size()) || start_idx >= end_idx) {
+      RCLCPP_FATAL(this->get_logger(),"Index out of bounds in deskewPointcloud");
+      return;
+    }
+
+    // Transform points in [start_idx, end_idx) to world frame.
+    for (int k = start_idx; k < end_idx; ++k) {
+      auto &pt = deskewed_scan_->points[k];
+      pt.getVector4fMap()[3] = 1.f;
+      pt.getVector4fMap() = T * pt.getVector4fMap();
+    }
+  };
+
+  // For small workloads, avoid queueing/synchronization overhead.
+  if (num_blocks <= 1 || point_count < kMinPointsPerBlock) {
+    for (std::size_t i = 0; i < segment_count; ++i) {
+      transform_segment(i);
+    }
+  } else {
+    const BS::multi_future<void> loop_future = thread_pool.submit_loop(0, segment_count, transform_segment, num_blocks);
+    loop_future.wait();
+  }
 
   this->deskewed_scan = deskewed_scan_;
   this->deskew_status = true;
