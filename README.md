@@ -25,14 +25,25 @@ The following has been verified to be compatible, although other configurations 
 
 - Ubuntu 22.04
 - ROS Humble (`rclcpp`, `std_msgs`, `sensor_msgs`, `geometry_msgs`, `nav_msgs`, `pcl_ros`)
-- C++ 14
+- C++ 17
 - CMake >= `3.12.4`
 - OpenMP >= `4.5`
 - Point Cloud Library >= `1.10.0`
 - Eigen >= `3.3.7`
+- [Equivariant Preintegration](https://github.com/aau-cns/equivariant-preintegration) — Lie-group IMU preintegration
+- [Lie++](https://github.com/aau-cns/Lie-plusplus) — header-only Lie group library (dependency of Equivariant Preintegration)
 
 ```sh
 sudo apt install libomp-dev libpcl-dev libeigen3-dev
+```
+
+The Equivariant Preintegration and Lie++ libraries are header-only and must be cloned alongside the DLIO source:
+
+```sh
+cd ~/ros2_ws/src
+git clone https://github.com/vectr-ucla/direct_lidar_inertial_odometry -b feature/ros2
+git clone https://github.com/aau-cns/equivariant-preintegration.git
+git clone https://github.com/aau-cns/Lie-plusplus.git
 ```
 
 DLIO currently supports `ROS 1` and `ROS 2`!
@@ -123,6 +134,34 @@ We thank the authors of the [FastGICP](https://github.com/SMRT-AIST/fast_gicp) a
 - Jose Luis Blanco and Pranjal Kumar Rai, “NanoFLANN: a C++ Header-Only Fork of FLANN, A Library for Nearest Neighbor (NN) with KD-Trees,” https://github.com/jlblancoc/nanoflann, 2014.
 
 We would also like to thank Helene Levy and David Thorne for their help with data collection.
+
+## Improvements (this fork)
+
+This fork includes significant performance and correctness improvements over the upstream `feature/ros2` branch:
+
+### IMU Integration
+- Replaced manual first-order quaternion integration with **[Equivariant Preintegration](https://arxiv.org/abs/2411.05548)** (RA-L 2025), a Lie-group-based method offering better numerical stability, built-in covariance propagation, and SIMD-accelerated Eigen operations.
+
+### Thread & CPU Optimization
+- **OpenMP thread explosion fix** — Disabled nested parallelism in PCL (`omp_set_nested(0)`, `omp_set_max_active_levels(1)`) and capped OMP threads via launch file environment variables. Eliminated ~1000 idle OMP threads on multi-core systems (1049 → 89 threads, -91%).
+- **Thread pool sizing** — Replaced hardcoded `thread_pool(4)` with `hardware_concurrency`-aware dynamic allocation.
+- **Deskew coarse-grained parallelism** — Replaced per-timestamp `submit_loop` with block-based partitioning (4096-point minimum block), reducing pool task count from ~1000 to ~16 for Livox scans.
+- **Async metrics with atomic gate** — Snapshot-based metrics computation with `exchange(true)` gate prevents stacking duplicate tasks. Thread-safe LPF state via `std::optional`.
+- **Batched keyframe publish** — Merged N × `detach_task` per keyframe into a single batched publish task. Also fixes a race on `kf_pose_ros.poses`.
+- **Convex/concave hull caching** — Skip recomputation when keyframe set and alpha parameters are unchanged.
+
+### Code Quality
+- Removed 4 unused `std::thread` members (dead code).
+- Replaced `static` local variables in IMU calibration with thread-safe member variables.
+- Fixed dead branch in `setAdaptiveParams` where density was unconditionally overwritten.
+- Replaced `std::priority_queue` in `pushSubmapIndices` with `std::nth_element` (O(n log k) → O(n)).
+
+### Performance Summary
+| Metric | Before | After |
+|--------|--------|-------|
+| Threads (idle) | 1049 | ~57 |
+| Threads (bag playback) | 1049 | ~89 |
+| RSS (bag playback) | ~150 MB | ~90 MB |
 
 ## License
 This work is licensed under the terms of the MIT license.

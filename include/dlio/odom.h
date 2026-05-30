@@ -14,6 +14,9 @@
 #include "dlio/dlio.h"
 #include "dlio/thread_pool.hpp"
 
+// Equivariant IMU preintegration (Lie group-based, replaces manual quaternion integration)
+#include "core/preintegration.hpp"
+
 // ROS
 #include "rclcpp/rclcpp.hpp"
 #include <nav_msgs/msg/odometry.hpp>
@@ -157,6 +160,11 @@ private:
 
   // Thread Pool
   BS::light_thread_pool thread_pool;
+  // Equivariant IMU Preintegration (replaces manual quaternion integration)
+  // Initialized after getParams() since gravity/noise values come from ROS params.
+  using Pim = preintegration::EquivariantPreintegration<double>;
+  std::shared_ptr<Pim::Params> pim_params_;
+  std::optional<Pim> pim_;
 
   // Trajectory
   std::vector<std::pair<Eigen::Vector3f, Eigen::Quaternionf>> trajectory;
