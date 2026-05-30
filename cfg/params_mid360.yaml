@@ -12,20 +12,20 @@
 
 /**:
   ros__parameters:
-    use_sim_time: true
-    frames/odom: odom
+    use_sim_time: false
+    frames/odom: map
     frames/baselink: base_link
-    frames/lidar: lidar
-    frames/imu: imu
+    frames/lidar: livox_frame
+    frames/imu: odom
 
-    map/waitUntilMove: true
-    map/dense/filtered: false
+    map/waitUntilMove: false
+    map/dense/filtered: true
     map/sparse/leafSize: 0.25
 
     odom/gravity: 9.80665
     odom/computeTimeOffset: true
 
-    odom/imu/approximateGravity: false
+    odom/imu/approximateGravity: true
     odom/imu/calibration/gyro: true
     odom/imu/calibration/accel: true
     odom/imu/calibration/time: 3.0
@@ -34,7 +34,7 @@
     odom/preprocessing/cropBoxFilter/size: 1.0
     odom/preprocessing/voxelFilter/res: 0.25
 
-    odom/keyframe/threshD: 1.0
+    odom/keyframe/threshD: 4.0
     odom/keyframe/threshR: 45.0
 
     odom/submap/keyframe/knn: 10
@@ -53,5 +53,11 @@
     odom/geo/Kq: 4.0
     odom/geo/Kab: 2.25
     odom/geo/Kgb: 1.0
-    odom/geo/abias_max: 5.0
+    odom/geo/abias_max: 10.0
     odom/geo/gbias_max: 0.5
+
+    odom/occupancy/enable: false
+    odom/occupancy/use_dynamic_map: false
+    odom/occupancy/map_resolution: 0.1
+    odom/occupancy/min_z: 0.0
+    odom/occupancy/max_z: 2.0

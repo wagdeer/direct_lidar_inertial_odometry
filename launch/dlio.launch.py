@@ -19,9 +19,9 @@ def generate_launch_description():
     current_pkg = FindPackageShare('direct_lidar_inertial_odometry')
 
     # Set default arguments
-    rviz = LaunchConfiguration('rviz', default='false')
-    pointcloud_topic = LaunchConfiguration('pointcloud_topic', default='points_raw')
-    imu_topic = LaunchConfiguration('imu_topic', default='imu_raw')
+    rviz = LaunchConfiguration('rviz', default='true')
+    pointcloud_topic = LaunchConfiguration('pointcloud_topic', default='/livox/lidar')
+    imu_topic = LaunchConfiguration('imu_topic', default='/livox/imu')
 
     # Define arguments
     declare_rviz_arg = DeclareLaunchArgument(
@@ -41,9 +41,9 @@ def generate_launch_description():
     )
 
     # Load parameters
-    dlio_yaml_path = PathJoinSubstitution([current_pkg, 'cfg', 'dlio.yaml'])
-    dlio_params_yaml_path = PathJoinSubstitution([current_pkg, 'cfg', 'params.yaml'])
-
+    dlio_yaml_path = PathJoinSubstitution([current_pkg, 'cfg', 'dlio_mid360.yaml'])
+    dlio_params_yaml_path = PathJoinSubstitution([current_pkg, 'cfg', 'params_mid360.yaml'])
+ 
     # DLIO Odometry Node
     dlio_odom_node = Node(
         package='direct_lidar_inertial_odometry',
@@ -66,7 +66,7 @@ def generate_launch_description():
     dlio_map_node = Node(
         package='direct_lidar_inertial_odometry',
         executable='dlio_map_node',
-        output='screen',
+        output='log',
         parameters=[dlio_yaml_path, dlio_params_yaml_path],
         remappings=[
             ('keyframes', 'dlio/odom_node/pointcloud/keyframe'),

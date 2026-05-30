@@ -23,7 +23,7 @@ dlio::MapNode::MapNode(): Node("dlio_map_node") {
   this->keyframe_sub = this->create_subscription<sensor_msgs::msg::PointCloud2>("keyframes", 10,
       std::bind(&dlio::MapNode::callbackKeyframe, this, std::placeholders::_1), keyframe_sub_opt);
 
-  this->map_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("map", 100);
+  this->map_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("dlio_map", 100);
 
   this->save_pcd_cb_group = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   this->save_pcd_srv = this->create_service<direct_lidar_inertial_odometry::srv::SavePCD>("save_pcd",
@@ -32,7 +32,6 @@ dlio::MapNode::MapNode(): Node("dlio_map_node") {
   this->dlio_map = std::make_shared<pcl::PointCloud<PointType>>();
 
   pcl::console::setVerbosityLevel(pcl::console::L_ERROR);
-
 }
 
 dlio::MapNode::~MapNode() {}

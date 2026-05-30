@@ -22,10 +22,11 @@ find_package(nav_msgs REQUIRED)
 find_package(pcl_ros REQUIRED)
 
 find_package(PCL REQUIRED)
-find_package( Eigen3 REQUIRED )
+find_package(Eigen3 REQUIRED)
 find_package(Threads REQUIRED)
 
 set(CMAKE_BUILD_TYPE "Release")
+
 set(CMAKE_CXX_STANDARD 17)
 
 set(CMAKE_THREAD_PREFER_PTHREAD TRUE)

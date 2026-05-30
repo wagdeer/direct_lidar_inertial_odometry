@@ -9,8 +9,10 @@
  * Contact: {kennyjchen, ryguyn, btlopez}@ucla.edu         *
  *                                                         *
  ***********************************************************/
+#pragma once
 
 #include "dlio/dlio.h"
+#include "dlio/BS_thread_pool.hpp"
 
 // ROS
 #include "rclcpp/rclcpp.hpp"
@@ -18,9 +20,13 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <nav_msgs/msg/path.hpp>
+#include "nav_msgs/msg/occupancy_grid.hpp"
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <tf2_ros/transform_broadcaster.h>
+
+// STL
+#include <atomic>
 
 // BOOST
 #include <boost/format.hpp>
@@ -30,10 +36,10 @@
 #include <boost/range/adaptor/adjacent_filtered.hpp>
 
 // PCL
+#include <pcl/filters/filter.h>
 #include <pcl/filters/crop_box.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/statistical_outlier_removal.h>
-#include <pcl/io/pcd_io.h>
 #include <pcl/surface/concave_hull.h>
 #include <pcl/surface/convex_hull.h>
 #include <pcl_conversions/pcl_conversions.h>
@@ -52,6 +58,7 @@ private:
   struct State;
   struct ImuMeas;
 
+  
   void getParams();
 
   void callbackPointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr pc);
@@ -63,6 +70,9 @@ private:
   void publishCloud(pcl::PointCloud<PointType>::ConstPtr published_cloud, Eigen::Matrix4f T_cloud);
   void publishKeyframe(std::pair<std::pair<Eigen::Vector3f, Eigen::Quaternionf>,
                        pcl::PointCloud<PointType>::ConstPtr> kf, rclcpp::Time timestamp);
+  void publishKeyFrameOccupancyMap();
+  void publishKeyFrameOccupancyMap(pcl::PointCloud<PointType>::Ptr cloud);
+  void publishOccupancyMap(pcl::PointCloud<PointType>::Ptr cloud);
 
   void getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedPtr& pc);
   void preprocessPoints();
@@ -122,6 +132,7 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr kf_pose_pub;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr kf_cloud_pub;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr deskewed_pub;
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr grid_map_pub;
 
   // TF
   std::shared_ptr<tf2_ros::TransformBroadcaster> br;
@@ -140,6 +151,7 @@ private:
   std::atomic<bool> submap_hasChanged;
   std::atomic<bool> gicp_hasConverged;
   std::atomic<bool> deskew_status;
+  std::atomic<bool> first_keyframe_occupancy_map;
   std::atomic<int> deskew_size;
 
   // Threads
@@ -147,6 +159,9 @@ private:
   std::thread publish_keyframe_thread;
   std::thread metrics_thread;
   std::thread debug_thread;
+
+  // Thread Pool
+  BS::light_thread_pool thread_pool;
 
   // Trajectory
   std::vector<std::pair<Eigen::Vector3f, Eigen::Quaternionf>> trajectory;
@@ -216,6 +231,14 @@ private:
   // GICP
   nano_gicp::NanoGICP<PointType, PointType> gicp;
   nano_gicp::NanoGICP<PointType, PointType> gicp_temp;
+
+  // Occupancy Map
+  bool occupancy_enable;
+  bool occupancy_use_dynamic_map;
+  double occupancy_map_resolution;
+  double occupancy_min_z;
+  double occupancy_max_z;
+  pcl::PointCloud<PointType>::Ptr occupancy_map_cloud_;
 
   // Transformations
   Eigen::Matrix4f T, T_prior, T_corr;

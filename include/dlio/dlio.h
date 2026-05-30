@@ -11,6 +11,8 @@
  ***********************************************************/
 
 // SYSTEM
+#pragma once
+
 #include <atomic>
 
 #ifdef HAS_CPUID
@@ -51,24 +53,21 @@ std::string to_string_with_precision(const T a_value, const int n = 6)
 #include <nano_gicp/nano_gicp.h>
 
 namespace dlio {
-  enum class SensorType { OUSTER, VELODYNE, HESAI, LIVOX, UNKNOWN };
+  enum class SensorType { LIVOX, UNKNOWN };
 
   class OdomNode;
   class MapNode;
 
-  struct Point {
-    Point(): data{0.f, 0.f, 0.f, 1.f} {}
+  struct EIGEN_ALIGN16 Point {
+    Point() {
+      data[3] = 1.f;
+    }
 
     PCL_ADD_POINT4D;
-    float intensity; // intensity
-    union {
-    std::uint32_t t;   // (Ouster) time since beginning of scan in nanoseconds
-    float time;        // (Velodyne) time since beginning of scan in seconds
-    double timestamp;  // (Hesai) absolute timestamp in seconds
-                       // (Livox) absolute timestamp in (seconds * 10e9)
-    };
+    float intensity;
+    double timestamp;
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-  } EIGEN_ALIGN16;
+  };
 }
 
 POINT_CLOUD_REGISTER_POINT_STRUCT(dlio::Point,
@@ -76,8 +75,6 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(dlio::Point,
                                  (float, y, y)
                                  (float, z, z)
                                  (float, intensity, intensity)
-                                 (std::uint32_t, t, t)
-                                 (float, time, time)
                                  (double, timestamp, timestamp))
 
 typedef dlio::Point PointType;

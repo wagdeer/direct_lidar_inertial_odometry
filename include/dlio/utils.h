@@ -9,6 +9,7 @@
  * Contact: {kennyjchen, ryguyn, btlopez}@ucla.edu         *
  *                                                         *
  ***********************************************************/
+#pragma once
 
 #include "rclcpp/rclcpp.hpp"
 
