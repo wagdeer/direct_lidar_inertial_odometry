@@ -196,6 +196,9 @@ private:
   pcl::ConcaveHull<PointType> concave_hull;
   std::vector<int> keyframe_convex;
   std::vector<int> keyframe_concave;
+  int convex_hull_last_kf_count_ = -1;
+  int concave_hull_last_kf_count_ = -1;
+  std::optional<float> concave_hull_last_alpha_;
 
   // Submap
   pcl::PointCloud<PointType>::ConstPtr submap_cloud;

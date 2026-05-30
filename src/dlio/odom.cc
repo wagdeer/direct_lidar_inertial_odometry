@@ -1700,6 +1700,11 @@ void dlio::OdomNode::computeConvexHull() {
     return;
   }
 
+  // Reuse previous result when keyframe set is unchanged.
+  if (this->convex_hull_last_kf_count_ == this->num_processed_keyframes && !this->keyframe_convex.empty()) {
+    return;
+  }
+
   // create a pointcloud with points at keyframes
   pcl::PointCloud<PointType>::Ptr cloud = std::make_shared<pcl::PointCloud<PointType>>();
 
@@ -1727,6 +1732,7 @@ void dlio::OdomNode::computeConvexHull() {
   for (int i=0; i<convex_hull_point_idx->indices.size(); ++i) {
     this->keyframe_convex.emplace_back(convex_hull_point_idx->indices[i]);
   }
+  this->convex_hull_last_kf_count_ = this->num_processed_keyframes;
 
 }
 
@@ -1734,6 +1740,18 @@ void dlio::OdomNode::computeConcaveHull() {
 
   // at least 5 keyframes for concave hull
   if (this->num_processed_keyframes < 5) {
+    return;
+  }
+
+  const float alpha_curr = static_cast<float>(this->keyframe_thresh_dist_);
+  constexpr float kAlphaRecomputeEps = 1e-3f;
+  const bool alpha_changed = !this->concave_hull_last_alpha_ ||
+                             std::abs(this->concave_hull_last_alpha_.value() - alpha_curr) > kAlphaRecomputeEps;
+
+  // Recompute only when keyframe set grows or alpha changes enough.
+  if (this->concave_hull_last_kf_count_ == this->num_processed_keyframes &&
+      !alpha_changed &&
+      !this->keyframe_concave.empty()) {
     return;
   }
 
@@ -1764,6 +1782,8 @@ void dlio::OdomNode::computeConcaveHull() {
   for (int i=0; i<concave_hull_point_idx->indices.size(); ++i) {
     this->keyframe_concave.emplace_back(concave_hull_point_idx->indices[i]);
   }
+  this->concave_hull_last_kf_count_ = this->num_processed_keyframes;
+  this->concave_hull_last_alpha_ = alpha_curr;
 
 }
 
