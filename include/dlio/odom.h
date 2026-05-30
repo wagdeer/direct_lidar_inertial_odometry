@@ -112,7 +112,7 @@ private:
   void updateKeyframes();
   void computeConvexHull();
   void computeConcaveHull();
-  void pushSubmapIndices(std::vector<float> dists, int k, std::vector<int> frames);
+  void pushSubmapIndices(const std::vector<float>& dists, int k, const std::vector<int>& frames);
   void buildSubmap(State vehicle_state);
   void buildKeyframesAndSubmap(State vehicle_state);
   void pauseSubmapBuildIfNeeded();
@@ -271,6 +271,10 @@ private:
   boost::circular_buffer<ImuMeas> imu_buffer;
   std::mutex mtx_imu;
   std::condition_variable cv_imu_stamp;
+  int imu_calib_num_samples_;
+  Eigen::Vector3f imu_calib_gyro_sum_;
+  Eigen::Vector3f imu_calib_accel_sum_;
+  bool imu_calib_print_once_;
 
   static bool comparatorImu(ImuMeas m1, ImuMeas m2) {
     return (m1.stamp < m2.stamp);

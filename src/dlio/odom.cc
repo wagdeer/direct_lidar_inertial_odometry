@@ -13,6 +13,7 @@
 #include "dlio/odom.h"
 #include "dlio/utils.h"
 
+#include <algorithm>
 #include <queue>
 #include <omp.h>
 
@@ -112,6 +113,10 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   this->imu_buffer.set_capacity(this->imu_buffer_size_);
   this->first_imu_stamp = 0.;
   this->prev_imu_stamp = 0.;
+  this->imu_calib_num_samples_ = 0;
+  this->imu_calib_gyro_sum_ = Eigen::Vector3f(0., 0., 0.);
+  this->imu_calib_accel_sum_ = Eigen::Vector3f(0., 0., 0.);
+  this->imu_calib_print_once_ = true;
 
   this->original_scan = std::make_shared<const pcl::PointCloud<PointType>>();
   this->deskewed_scan = std::make_shared<const pcl::PointCloud<PointType>>();
@@ -1113,35 +1118,25 @@ void dlio::OdomNode::callbackImu(const sensor_msgs::msg::Imu::SharedPtr imu_raw)
   // IMU calibration procedure - do for three seconds
   if (!this->imu_calibrated) {
 
-    static int num_samples = 0;
-    static Eigen::Vector3f gyro_avg (0., 0., 0.);
-    static Eigen::Vector3f accel_avg (0., 0., 0.);
-    static bool print = true;
-
     if ((imu_stamp_secs - this->first_imu_stamp) < this->imu_calib_time_) {
 
-      num_samples++;
+      this->imu_calib_num_samples_++;
+      this->imu_calib_gyro_sum_ += ang_vel;
+      this->imu_calib_accel_sum_ += lin_accel;
 
-      gyro_avg[0] += ang_vel[0];
-      gyro_avg[1] += ang_vel[1];
-      gyro_avg[2] += ang_vel[2];
-
-      accel_avg[0] += lin_accel[0];
-      accel_avg[1] += lin_accel[1];
-      accel_avg[2] += lin_accel[2];
-
-      if(print) {
+      if (this->imu_calib_print_once_) {
         std::cout << std::endl << " Calibrating IMU for " << this->imu_calib_time_ << " seconds... ";
         std::cout.flush();
-        print = false;
+        this->imu_calib_print_once_ = false;
       }
 
     } else {
 
       std::cout << "done" << std::endl << std::endl;
 
-      gyro_avg /= num_samples;
-      accel_avg /= num_samples;
+      const int sample_count = std::max(1, this->imu_calib_num_samples_);
+      const Eigen::Vector3f gyro_avg = this->imu_calib_gyro_sum_ / static_cast<float>(sample_count);
+      const Eigen::Vector3f accel_avg = this->imu_calib_accel_sum_ / static_cast<float>(sample_count);
 
       Eigen::Vector3f grav_vec (0., 0., this->gravity_);
 
@@ -1195,6 +1190,7 @@ void dlio::OdomNode::callbackImu(const sensor_msgs::msg::Imu::SharedPtr imu_raw)
       }
 
       this->imu_calibrated = true;
+      this->imu_calib_print_once_ = true;
 
     }
 
@@ -1892,8 +1888,11 @@ void dlio::OdomNode::setAdaptiveParams() {
   if (den < 0.5*this->gicp_max_corr_dist_) { den = 0.5*this->gicp_max_corr_dist_; }
   if (den > 2.0*this->gicp_max_corr_dist_) { den = 2.0*this->gicp_max_corr_dist_; }
 
-  if (sp < 5.0) { den = 0.5*this->gicp_max_corr_dist_; };
-  if (sp > 5.0) { den = 2.0*this->gicp_max_corr_dist_; };
+  if (sp <= 0.5f) {
+    den = 0.5f * this->gicp_max_corr_dist_;
+  } else if (sp >= 5.0f) {
+    den = 2.0f * this->gicp_max_corr_dist_;
+  }
 
   this->gicp.setMaxCorrespondenceDistance(den);
 
@@ -1902,30 +1901,26 @@ void dlio::OdomNode::setAdaptiveParams() {
 
 }
 
-void dlio::OdomNode::pushSubmapIndices(std::vector<float> dists, int k, std::vector<int> frames) {
+void dlio::OdomNode::pushSubmapIndices(const std::vector<float>& dists, int k, const std::vector<int>& frames) {
 
-  // make sure dists is not empty
-  if (!dists.size()) { return; }
+  const std::size_t n = std::min(dists.size(), frames.size());
+  if (n == 0 || k <= 0) { return; }
 
-  // maintain max heap of at most k elements
-  std::priority_queue<float> pq;
-
-  for (auto d : dists) {
-    if (pq.size() >= k && pq.top() > d) {
-      pq.push(d);
-      pq.pop();
-    } else if (pq.size() < k) {
-      pq.push(d);
-    }
+  if (static_cast<std::size_t>(k) >= n) {
+    this->submap_kf_idx_curr.insert(this->submap_kf_idx_curr.end(), frames.begin(), frames.begin() + n);
+    return;
   }
 
-  // get the kth smallest element, which should be at the top of the heap
-  float kth_element = pq.top();
+  // Copy once, then select the k-th smallest in linear average time.
+  std::vector<float> dists_work(dists.begin(), dists.begin() + n);
+  const auto kth_it = dists_work.begin() + (k - 1);
+  std::nth_element(dists_work.begin(), kth_it, dists_work.end());
+  const float kth_element = *kth_it;
 
-  // get all elements smaller or equal to the kth smallest element
-  for (int i = 0; i < dists.size(); ++i) {
-    if (dists[i] <= kth_element)
+  for (std::size_t i = 0; i < n; ++i) {
+    if (dists[i] <= kth_element) {
       this->submap_kf_idx_curr.emplace_back(frames[i]);
+    }
   }
 
 }
