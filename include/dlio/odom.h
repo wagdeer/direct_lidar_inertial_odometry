@@ -27,6 +27,7 @@
 
 // STL
 #include <atomic>
+#include <optional>
 
 // BOOST
 #include <boost/format.hpp>
@@ -102,9 +103,9 @@ private:
   void setAdaptiveParams();
   void setKeyframeCloud();
 
-  void computeMetrics();
-  void computeSpaciousness();
-  void computeDensity();
+  void computeMetrics(const pcl::PointCloud<PointType>::ConstPtr& scan_snapshot, float density_snapshot);
+  void computeSpaciousness(const pcl::PointCloud<PointType>::ConstPtr& scan_snapshot);
+  void computeDensity(float density_curr);
 
   sensor_msgs::msg::Imu::SharedPtr transformImu(const sensor_msgs::msg::Imu::SharedPtr& imu);
 
@@ -318,6 +319,10 @@ private:
     std::vector<float> spaciousness;
     std::vector<float> density;
   }; Metrics metrics;
+  std::mutex metrics_mutex;
+  std::atomic<bool> metrics_task_running_{false};
+  std::optional<float> spaciousness_lpf_prev_;
+  std::optional<float> density_lpf_prev_;
 
   std::string cpu_type;
   std::vector<double> cpu_percents;

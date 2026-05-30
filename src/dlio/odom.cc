@@ -985,10 +985,19 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
     return;
   }
 
-  // Compute Metrics
-  thread_pool.detach_task([this]() {
-    this->computeMetrics();
-  });
+  // Compute metrics on per-frame snapshots to avoid races with async execution.
+  const auto scan_snapshot = this->original_scan;
+  const float density_snapshot = this->geo.first_opt_done ? this->gicp.source_density_ : 0.f;
+  if (!this->metrics_task_running_.exchange(true)) {
+    thread_pool.detach_task([this, scan_snapshot, density_snapshot]() {
+      try {
+        this->computeMetrics(scan_snapshot, density_snapshot);
+      } catch (...) {
+        // Keep async metrics failures from permanently disabling scheduling.
+      }
+      this->metrics_task_running_.store(false);
+    });
+  }
 
   // Set Adaptive Parameters
   if (this->adaptive_params_) {
@@ -1625,49 +1634,47 @@ sensor_msgs::msg::Imu::SharedPtr dlio::OdomNode::transformImu(const sensor_msgs:
 
 }
 
-void dlio::OdomNode::computeMetrics() {
-  this->computeSpaciousness();
-  this->computeDensity();
+void dlio::OdomNode::computeMetrics(const pcl::PointCloud<PointType>::ConstPtr& scan_snapshot, float density_snapshot) {
+  this->computeSpaciousness(scan_snapshot);
+  this->computeDensity(density_snapshot);
 }
 
-void dlio::OdomNode::computeSpaciousness() {
+void dlio::OdomNode::computeSpaciousness(const pcl::PointCloud<PointType>::ConstPtr& scan_snapshot) {
 
-  // compute range of points
+  if (!scan_snapshot || scan_snapshot->points.empty()) {
+    return;
+  }
+
+  // Compute radial distance of points in XY plane.
   std::vector<float> ds;
+  ds.reserve(scan_snapshot->points.size());
 
-  for (int i = 0; i < this->original_scan->points.size(); i++) {
-    float d = std::sqrt(pow(this->original_scan->points[i].x, 2) +
-                        pow(this->original_scan->points[i].y, 2));
-    ds.emplace_back(d);
+  for (const auto& pt : scan_snapshot->points) {
+    ds.emplace_back(std::sqrt(pt.x * pt.x + pt.y * pt.y));
   }
 
-  // median
-  std::nth_element(ds.begin(), ds.begin() + ds.size()/2, ds.end());
-  float median_curr = ds[ds.size()/2];
-  static float median_prev = median_curr;
-  float median_lpf = 0.95*median_prev + 0.05*median_curr;
-  median_prev = median_lpf;
+  const size_t mid = ds.size() / 2;
+  std::nth_element(ds.begin(), ds.begin() + mid, ds.end());
+  const float median_curr = ds[mid];
 
-  // push
-  this->metrics.spaciousness.emplace_back( median_lpf );
+  std::lock_guard<std::mutex> lock(this->metrics_mutex);
+  if (!this->spaciousness_lpf_prev_) {
+    this->spaciousness_lpf_prev_ = median_curr;
+  }
+  const float median_lpf = 0.95f * this->spaciousness_lpf_prev_.value() + 0.05f * median_curr;
+  this->spaciousness_lpf_prev_ = median_lpf;
+  this->metrics.spaciousness.emplace_back(median_lpf);
 
 }
 
-void dlio::OdomNode::computeDensity() {
-
-  float density;
-
-  if (!this->geo.first_opt_done) {
-    density = 0.;
-  } else {
-    density = this->gicp.source_density_;
+void dlio::OdomNode::computeDensity(float density_curr) {
+  std::lock_guard<std::mutex> lock(this->metrics_mutex);
+  if (!this->density_lpf_prev_) {
+    this->density_lpf_prev_ = density_curr;
   }
-
-  static float density_prev = density;
-  float density_lpf = 0.95*density_prev + 0.05*density;
-  density_prev = density_lpf;
-
-  this->metrics.density.emplace_back( density_lpf );
+  const float density_lpf = 0.95f * this->density_lpf_prev_.value() + 0.05f * density_curr;
+  this->density_lpf_prev_ = density_lpf;
+  this->metrics.density.emplace_back(density_lpf);
 
 }
 
@@ -1829,7 +1836,17 @@ void dlio::OdomNode::updateKeyframes() {
 void dlio::OdomNode::setAdaptiveParams() {
 
   // Spaciousness
-  float sp = this->metrics.spaciousness.back();
+  float sp = 0.f;
+  float den = 0.f;
+  {
+    std::lock_guard<std::mutex> lock(this->metrics_mutex);
+    if (!this->metrics.spaciousness.empty()) {
+      sp = this->metrics.spaciousness.back();
+    }
+    if (!this->metrics.density.empty()) {
+      den = this->metrics.density.back();
+    }
+  }
 
   if (sp < 0.5) { sp = 0.5; }
   if (sp > 5.0) { sp = 5.0; }
@@ -1837,8 +1854,6 @@ void dlio::OdomNode::setAdaptiveParams() {
   this->keyframe_thresh_dist_ = sp;
 
   // Density
-  float den = this->metrics.density.back();
-
   if (den < 0.5*this->gicp_max_corr_dist_) { den = 0.5*this->gicp_max_corr_dist_; }
   if (den > 2.0*this->gicp_max_corr_dist_) { den = 2.0*this->gicp_max_corr_dist_; }
 
