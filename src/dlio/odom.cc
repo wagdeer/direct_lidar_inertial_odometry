@@ -2024,6 +2024,11 @@ void dlio::OdomNode::buildKeyframesAndSubmap(State vehicle_state) {
 
   // transform the new keyframe(s) and associated covariance list(s)
   std::unique_lock<decltype(this->keyframes_mutex)> lock(this->keyframes_mutex);
+  const bool should_publish_keyframes =
+      (this->kf_pose_pub->get_subscription_count() && this->kf_cloud_pub->get_subscription_count());
+  std::vector<std::pair<std::pair<std::pair<Eigen::Vector3f, Eigen::Quaternionf>,
+                                  pcl::PointCloud<PointType>::ConstPtr>, rclcpp::Time>> pending_keyframes_to_publish;
+  pending_keyframes_to_publish.reserve(this->keyframes.size() - this->num_processed_keyframes);
 
   for (int i = this->num_processed_keyframes; i < this->keyframes.size(); i++) {
     pcl::PointCloud<PointType>::ConstPtr raw_keyframe = this->keyframes[i].second;
@@ -2046,14 +2051,21 @@ void dlio::OdomNode::buildKeyframesAndSubmap(State vehicle_state) {
     this->keyframes[i].second = transformed_keyframe;
     this->keyframe_normals[i] = transformed_covariances;
 
-    if (this->kf_pose_pub->get_subscription_count() && this->kf_cloud_pub->get_subscription_count()) {
-      thread_pool.detach_task([this, i]() {
-        this->publishKeyframe(this->keyframes[i], this->keyframe_timestamps[i]);
-      });
+    if (should_publish_keyframes) {
+      pending_keyframes_to_publish.emplace_back(this->keyframes[i], this->keyframe_timestamps[i]);
     }
   }
 
   lock.unlock();
+
+  // Publish newly processed keyframes in a single task to avoid per-keyframe scheduling overhead.
+  if (should_publish_keyframes && !pending_keyframes_to_publish.empty()) {
+    thread_pool.detach_task([this, pending_keyframes = std::move(pending_keyframes_to_publish)]() {
+      for (const auto& item : pending_keyframes) {
+        this->publishKeyframe(item.first, item.second);
+      }
+    });
+  }
 
   // Pause to prevent stealing resources from the main loop if it is running.
   this->pauseSubmapBuildIfNeeded();
