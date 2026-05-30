@@ -14,9 +14,25 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+import os
 
 def generate_launch_description():
     current_pkg = FindPackageShare('direct_lidar_inertial_odometry')
+
+    # Prevent OpenMP thread explosion in PCL (nested parallel-for on multi-core).
+    # Must be set before process starts — runtime omp_set_* calls come too late.
+    # OMP_THREAD_LIMIT caps total OMP threads globally regardless of how many
+    # pool workers call PCL concurrently.
+    ncpu = os.cpu_count() or 4
+    pool_threads = max(2, ncpu // 2)
+    # OMP threads kept small — pool already provides task-level parallelism.
+    # Each pool worker gets a small OMP team for PCL operations (voxel, transform).
+    omp_threads = max(1, min(2, (ncpu - pool_threads) // 2))
+    os.environ.setdefault('OMP_NUM_THREADS', str(omp_threads))
+    os.environ.setdefault('OMP_THREAD_LIMIT', str(omp_threads))
+    os.environ.setdefault('OMP_NESTED', 'FALSE')
+    os.environ.setdefault('OMP_DYNAMIC', 'FALSE')
+    os.environ.setdefault('OMP_MAX_ACTIVE_LEVELS', '1')
 
     # Set default arguments
     rviz = LaunchConfiguration('rviz', default='true')

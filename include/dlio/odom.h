@@ -154,12 +154,6 @@ private:
   std::atomic<bool> first_keyframe_occupancy_map;
   std::atomic<int> deskew_size;
 
-  // Threads
-  std::thread publish_thread;
-  std::thread publish_keyframe_thread;
-  std::thread metrics_thread;
-  std::thread debug_thread;
-
   // Thread Pool
   BS::light_thread_pool thread_pool;
 

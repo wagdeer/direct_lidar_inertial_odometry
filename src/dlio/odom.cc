@@ -14,19 +14,38 @@
 #include "dlio/utils.h"
 
 #include <queue>
+#include <omp.h>
 
 #include "rclcpp/qos.hpp"
 
-dlio::OdomNode::OdomNode() : Node("dlio_odom_node"), thread_pool(4) {
+dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
   this->getParams();
-  
-  int hardware_threads = std::thread::hardware_concurrency();
-  int num_threads = hardware_threads / 4;
-  omp_set_num_threads(num_threads);
+
+  // Allocate threads between thread pool and OpenMP to avoid oversubscription.
+  // Pool handles parallel-for (deskew) and async tasks (submap, publish, metrics).
+  // OpenMP is used internally by PCL/Eigen for compute-bound operations.
+  unsigned int hardware_threads = std::thread::hardware_concurrency();
+  if (hardware_threads == 0) { hardware_threads = 4; } // fallback
+
+  // Pool: at least 2, at most half of cores (but leave room for OMP)
+  unsigned int pool_threads = std::max(2u, hardware_threads / 2);
+
+  // OMP: use remaining cores, but at least 1
+  unsigned int omp_threads = std::max(1u, (hardware_threads > pool_threads) ? (hardware_threads - pool_threads) / 2 : 1u);
+
+  thread_pool.reset(pool_threads);
+
+  // OpenMP: primary control is now in dlio.launch.py (env vars set before process start).
+  // Runtime calls below are a secondary safety net.
+  omp_set_num_threads(omp_threads);
+  omp_set_dynamic(0);
+  omp_set_nested(0);
+  omp_set_max_active_levels(1);
   this->num_threads_ = omp_get_max_threads();
-  std::cout << "num_threads_: " << this->num_threads_ << std::endl;
-  std::cout << "hardware_threads: " << hardware_threads << std::endl;
+  std::cout << "hardware_threads: " << hardware_threads
+            << " | pool: " << thread_pool.get_thread_count()
+            << " | omp: " << omp_threads << std::endl;
 
   this->dlio_initialized = false;
   this->first_valid_scan = false;
