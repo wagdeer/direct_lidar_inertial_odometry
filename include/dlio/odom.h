@@ -387,6 +387,12 @@ private:
   int gicp_max_iter_;
   double gicp_transformation_ep_;
   double gicp_rotation_ep_;
+  bool gicp_require_converged_;
+  int gicp_min_inliers_;
+  double gicp_max_error_;
+  bool gicp_reject_large_correction_;
+  double gicp_max_corr_trans_;
+  double gicp_max_corr_rot_deg_;
 
   double geo_Kp_;
   double geo_Kv_;

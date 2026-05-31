@@ -351,6 +351,12 @@ void dlio::OdomNode::getParams() {
   dlio::declare_param(this, "odom/gicp/maxIterations", this->gicp_max_iter_, 64);
   dlio::declare_param(this, "odom/gicp/transformationEpsilon", this->gicp_transformation_ep_, 0.0005);
   dlio::declare_param(this, "odom/gicp/rotationEpsilon", this->gicp_rotation_ep_, 0.0005);
+  dlio::declare_param(this, "odom/gicp/requireConverged", this->gicp_require_converged_, false);
+  dlio::declare_param(this, "odom/gicp/minInliers", this->gicp_min_inliers_, 0);
+  dlio::declare_param(this, "odom/gicp/maxError", this->gicp_max_error_, -1.0);
+  dlio::declare_param(this, "odom/gicp/rejectLargeCorrection", this->gicp_reject_large_correction_, false);
+  dlio::declare_param(this, "odom/gicp/maxCorrectionTranslation", this->gicp_max_corr_trans_, 1.0);
+  dlio::declare_param(this, "odom/gicp/maxCorrectionRotationDeg", this->gicp_max_corr_rot_deg_, 20.0);
 
   // Geometric Observer
   dlio::declare_param(this, "odom/geo/Kp", this->geo_Kp_, 1.0);
@@ -1109,8 +1115,6 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
     this->publishToROS(published_cloud, T_corr_snapshot);
   });
 
-  this->gicp_hasConverged = this->gicp.hasConverged();
-
   if (this->debug_) {
     this->comp_times.push_back(this->now().seconds() - then);
     thread_pool.detach_task([this]() {
@@ -1279,9 +1283,53 @@ void dlio::OdomNode::getNextPose() {
   pcl::PointCloud<PointType>::Ptr aligned = std::make_shared<pcl::PointCloud<PointType>>();
   this->gicp.align(*aligned);
 
-  // Get final transformation in global frame
-  this->T_corr = this->gicp.getFinalTransformation(); // "correction" transformation
-  this->T = this->T_corr * this->T_prior;
+  const bool converged = this->gicp.hasConverged();
+  this->gicp_hasConverged = converged;
+  const auto& result = this->gicp.getRegistrationResult();
+
+  Eigen::Matrix4f T_corr_candidate = this->gicp.getFinalTransformation();
+  const Eigen::Vector3f t_corr = T_corr_candidate.block<3, 1>(0, 3);
+  const double corr_trans = static_cast<double>(t_corr.norm());
+
+  Eigen::Quaternionf q_corr(T_corr_candidate.block<3, 3>(0, 0));
+  q_corr.normalize();
+  const double corr_rot_rad = 2.0 * std::atan2(q_corr.vec().norm(), std::abs(q_corr.w()));
+  const double corr_rot_deg = corr_rot_rad * (180.0 / M_PI);
+
+  bool accepted = true;
+  if (accepted && this->gicp_require_converged_ && !converged) {
+    accepted = false;
+  }
+  if (accepted && this->gicp_min_inliers_ > 0 && result.num_inliers < static_cast<size_t>(this->gicp_min_inliers_)) {
+    accepted = false;
+  }
+  if (accepted && this->gicp_max_error_ > 0.0 &&
+      (!std::isfinite(result.error) || result.error > this->gicp_max_error_)) {
+    accepted = false;
+  }
+  if (accepted && this->gicp_reject_large_correction_ &&
+      (corr_trans > this->gicp_max_corr_trans_ || corr_rot_deg > this->gicp_max_corr_rot_deg_)) {
+    accepted = false;
+  }
+
+  if (accepted) {
+    this->T_corr = T_corr_candidate; // "correction" transformation
+    this->T = this->T_corr * this->T_prior;
+  } else {
+    // Reject likely bad scan matching results and keep the IMU-predicted pose.
+    this->T_corr = Eigen::Matrix4f::Identity();
+    this->T = this->T_prior;
+    RCLCPP_WARN(
+      this->get_logger(),
+      "Reject GICP update: converged=%d inliers=%zu iter=%zu error=%.6f corr_trans=%.3f[m] corr_rot=%.2f[deg]",
+      converged ? 1 : 0,
+      result.num_inliers,
+      result.iterations,
+      result.error,
+      corr_trans,
+      corr_rot_deg
+    );
+  }
 
   // Update next global pose
   // Both source and target clouds are in the global frame now, so tranformation is global
