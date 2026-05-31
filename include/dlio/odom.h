@@ -165,6 +165,12 @@ private:
   using Pim = preintegration::EquivariantPreintegration<double>;
   std::shared_ptr<Pim::Params> pim_params_;
   std::optional<Pim> pim_;
+  std::optional<Pim> pim_propagate_;         // dedicated pim for continuous state propagation
+
+  // Per-LiDAR-frame propagation baseline (updated after each GICP correction)
+  Eigen::Vector3d propagate_base_p_  = Eigen::Vector3d::Zero();
+  Eigen::Quaterniond propagate_base_q_ = Eigen::Quaterniond::Identity();
+  Eigen::Vector3d propagate_base_v_  = Eigen::Vector3d::Zero();
 
   // Trajectory
   std::vector<std::pair<Eigen::Vector3f, Eigen::Quaternionf>> trajectory;

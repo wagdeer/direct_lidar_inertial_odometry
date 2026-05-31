@@ -60,6 +60,7 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
       0., 0.  // virtual bias random walks (unused)
   );
   this->pim_.emplace(this->pim_params_);
+  this->pim_propagate_.emplace(this->pim_params_);
 
   this->dlio_initialized = false;
   this->first_valid_scan = false;
@@ -1277,6 +1278,12 @@ void dlio::OdomNode::getNextPose() {
   // Geometric observer update
   this->updateState();
 
+  // Reset propagation baseline to corrected state for next IMU propagation cycle
+  this->propagate_base_p_ = this->state.p.cast<double>();
+  this->propagate_base_q_ = this->state.q.cast<double>();
+  this->propagate_base_v_ = this->state.v.lin.w.cast<double>();
+  this->pim_propagate_->resetIntegrationAndSetBias(Pim::Vec10::Zero());
+
 }
 
 bool dlio::OdomNode::imuMeasFromTimeRange(double start_time, double end_time,
@@ -1438,34 +1445,32 @@ void dlio::OdomNode::propagateState() {
   // Lock thread to prevent state from being accessed by UpdateState
   std::lock_guard<std::mutex> lock( this->geo.mtx );
 
-  double dt = this->imu_meas.dt;
+  // Feed IMU measurement into propagate pim for Lie-group integration.
+  // This replaces the old Euler integration and matches the deskew path.
+  pim_propagate_->integrateMeasurement(
+      Eigen::Vector3d(this->imu_meas.lin_accel[0],
+                      this->imu_meas.lin_accel[1],
+                      this->imu_meas.lin_accel[2]),
+      Eigen::Vector3d(this->imu_meas.ang_vel[0],
+                      this->imu_meas.ang_vel[1],
+                      this->imu_meas.ang_vel[2]),
+      static_cast<double>(this->imu_meas.dt));
 
-  Eigen::Quaternionf qhat = this->state.q, omega;
-  Eigen::Vector3f world_accel;
+  // Get delta from frame-start baseline
+  Eigen::Matrix3d dR = pim_propagate_->deltaRij();
+  Eigen::Vector3d dP = pim_propagate_->deltaPij();
+  Eigen::Vector3d dV = pim_propagate_->deltaVij();
 
-  // Transform accel from body to world frame
-  world_accel = qhat._transformVector(this->imu_meas.lin_accel);
+  // Apply delta to baseline state (world frame)
+  Eigen::Matrix3d R_base = propagate_base_q_.toRotationMatrix();
+  Eigen::Quaterniond q_new(R_base * dR);
+  q_new.normalize();
 
-  // Accel propogation
-  this->state.p[0] += this->state.v.lin.w[0]*dt + 0.5*dt*dt*world_accel[0];
-  this->state.p[1] += this->state.v.lin.w[1]*dt + 0.5*dt*dt*world_accel[1];
-  this->state.p[2] += this->state.v.lin.w[2]*dt + 0.5*dt*dt*(world_accel[2] - this->gravity_);
+  this->state.q = q_new.cast<float>();
+  this->state.p = (propagate_base_p_ + R_base * dP).cast<float>();
+  this->state.v.lin.w = (propagate_base_v_ + R_base * dV).cast<float>();
 
-  this->state.v.lin.w[0] += world_accel[0]*dt;
-  this->state.v.lin.w[1] += world_accel[1]*dt;
-  this->state.v.lin.w[2] += (world_accel[2] - this->gravity_)*dt;
   this->state.v.lin.b = this->state.q.toRotationMatrix().inverse() * this->state.v.lin.w;
-
-  // Gyro propogation
-  omega.w() = 0;
-  omega.vec() = this->imu_meas.ang_vel;
-  Eigen::Quaternionf tmp = qhat * omega;
-  this->state.q.w() += 0.5 * dt * tmp.w();
-  this->state.q.vec() += 0.5 * dt * tmp.vec();
-
-  // Ensure quaternion is properly normalized
-  this->state.q.normalize();
-
   this->state.v.ang.b = this->imu_meas.ang_vel;
   this->state.v.ang.w = this->state.q.toRotationMatrix() * this->state.v.ang.b;
 
