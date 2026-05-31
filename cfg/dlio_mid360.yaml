@@ -17,6 +17,8 @@
 
     adaptive: true
 
+    debug: false
+
     pointcloud/deskew: true
     pointcloud/voxelize: true
 

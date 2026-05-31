@@ -174,6 +174,7 @@ private:
   // Trajectory
   std::vector<std::pair<Eigen::Vector3f, Eigen::Quaternionf>> trajectory;
   double length_traversed;
+  std::optional<Eigen::Vector3f> length_ref_pose_;
 
   // Keyframes
   std::vector<std::pair<std::pair<Eigen::Vector3f, Eigen::Quaternionf>,
@@ -230,9 +231,9 @@ private:
   rclcpp::Time scan_header_stamp;
   double scan_stamp;
   double prev_scan_stamp;
-  std::vector<double> comp_times;
-  std::vector<double> imu_rates;
-  std::vector<double> lidar_rates;
+  boost::circular_buffer<double> comp_times;
+  boost::circular_buffer<double> imu_rates;
+  boost::circular_buffer<double> lidar_rates;
 
   double first_scan_stamp;
   double elapsed_time;
@@ -342,7 +343,8 @@ private:
   std::optional<float> density_lpf_prev_;
 
   std::string cpu_type;
-  std::vector<double> cpu_percents;
+  boost::circular_buffer<double> cpu_percents;
+  std::mutex debug_mutex;
   clock_t lastCPU, lastSysCPU, lastUserCPU;
   int numProcessors;
 
@@ -357,6 +359,7 @@ private:
 
   bool adaptive_params_;
 
+  bool debug_;
 
   double keyframe_thresh_dist_;
   double keyframe_thresh_rot_;
