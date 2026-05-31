@@ -30,37 +30,19 @@ The following has been verified to be compatible, although other configurations 
 - OpenMP >= `4.5`
 - Point Cloud Library >= `1.10.0`
 - Eigen >= `3.3.7`
-- [Equivariant Preintegration](https://github.com/aau-cns/equivariant-preintegration) — Lie-group IMU preintegration
-- [Lie++](https://github.com/aau-cns/Lie-plusplus) — header-only Lie group library (dependency of Equivariant Preintegration)
 
 ```sh
 sudo apt install libomp-dev libpcl-dev libeigen3-dev
 ```
 
-The Equivariant Preintegration and Lie++ libraries are header-only and must be cloned alongside the DLIO source:
-
-```sh
-cd ~/ros2_ws/src
-git clone https://github.com/vectr-ucla/direct_lidar_inertial_odometry -b feature/ros2
-git clone https://github.com/aau-cns/equivariant-preintegration.git
-git clone https://github.com/aau-cns/Lie-plusplus.git
-```
-
-DLIO currently supports `ROS 1` and `ROS 2`!
+Equivariant IMU preintegration and the Lie++ group library are **vendored** in `include/dlio/preintegration/` and `include/dlio/lie/` — no external cloning required.
 
 ### Compiling
-Compile using the [`catkin_tools`](https://catkin-tools.readthedocs.io/en/latest/) package via:
 
 ```sh
-mkdir ~/ros2_ws && cd ~/ros2_ws && mkdir src && cd src
-```
-```sh
-git clone https://github.com/vectr-ucla/direct_lidar_inertial_odometry -b feature/ros2
-```
-```sh
+mkdir -p ~/ros2_ws/src && cd ~/ros2_ws/src
+git clone https://github.com/wagdeer/direct_lidar_inertial_odometry -b feature/humble
 cd ~/ros2_ws
-```
-```sh
 colcon build --symlink-install --packages-select direct_lidar_inertial_odometry
 ```
 
@@ -137,34 +119,42 @@ We would also like to thank Helene Levy and David Thorne for their help with dat
 
 ## Improvements (this fork)
 
-This fork includes significant performance and correctness improvements over the upstream `feature/ros2` branch:
+This fork (`feature/humble`) includes significant improvements over upstream DLIO:
 
 ### IMU Integration
-- Replaced manual first-order quaternion integration with **[Equivariant Preintegration](https://arxiv.org/abs/2411.05548)** (RA-L 2025), a Lie-group-based method offering better numerical stability, built-in covariance propagation, and SIMD-accelerated Eigen operations.
+- Replaced manual first-order quaternion integration with **[Equivariant Preintegration](https://arxiv.org/abs/2411.05548)** (RA-L 2025) — Lie-group-based method on the Gal(3) manifold offering better numerical stability and built-in covariance propagation.
+- Unified `propagateState()` (geometric observer) with the same Lie-group integrator, eliminating Euler integration drift and reducing correction workload on the observer. This is the primary contributor to improved Z-axis stability.
 
 ### Thread & CPU Optimization
-- **OpenMP thread explosion fix** — Disabled nested parallelism in PCL (`omp_set_nested(0)`, `omp_set_max_active_levels(1)`) and capped OMP threads via launch file environment variables. Eliminated ~1000 idle OMP threads on multi-core systems (1049 → 89 threads, -91%).
-- **Thread pool sizing** — Replaced hardcoded `thread_pool(4)` with `hardware_concurrency`-aware dynamic allocation.
-- **Deskew coarse-grained parallelism** — Replaced per-timestamp `submit_loop` with block-based partitioning (4096-point minimum block), reducing pool task count from ~1000 to ~16 for Livox scans.
-- **Async metrics with atomic gate** — Snapshot-based metrics computation with `exchange(true)` gate prevents stacking duplicate tasks. Thread-safe LPF state via `std::optional`.
-- **Batched keyframe publish** — Merged N × `detach_task` per keyframe into a single batched publish task. Also fixes a race on `kf_pose_ros.poses`.
-- **Convex/concave hull caching** — Skip recomputation when keyframe set and alpha parameters are unchanged.
+- **OpenMP thread explosion fix** — Capped OMP threads and disabled nested parallelism, eliminating ~1000 idle threads on multi-core systems (1049 → 89).
+- **Deskew coarse-grained parallelism** — Block-based partitioning (≥4096 pts/block) reduces pool task count from ~1000 to ~16 for Livox scans.
+- **Async metrics** — Snapshot + atomic gate pattern moves spaciousness/density computation off the critical path.
+- **Hull caching** — Convex/concave hull recomputation skipped when keyframe set unchanged.
+- **Submap index O(n) selection** — `std::nth_element` replaces full sort for top-K keyframe selection.
+
+### Robustness
+- **T_corr race fix** — Snapshot GICP correction before async publish, preventing stale transforms.
+- **numProcessors fallback** — `sysconf(_SC_NPROCESSORS_ONLN)` when `/proc/cpuinfo` unavailable (containers).
+- **`fopen` null guard** — Prevents crash when `/proc/cpuinfo` is inaccessible.
+- **Static locals → members** — `transformImu()` no longer shares state across instances.
 
 ### Code Quality
-- Removed 4 unused `std::thread` members (dead code).
-- Replaced `static` local variables in IMU calibration with thread-safe member variables.
-- Fixed dead branch in `setAdaptiveParams` where density was unconditionally overwritten.
-- Replaced `std::priority_queue` in `pushSubmapIndices` with `std::nth_element` (O(n log k) → O(n)).
+- **Zero external deps** — Equivariant Preintegration and Lie++ vendored into `include/dlio/` (BSD-2-Clause, with attribution).
+- **Debug gate** — `debug: false` (default) disables all statistics collection and terminal dashboard for zero runtime overhead. Set `debug: true` for real-time CPU/memory monitoring with circular-buffer-capped (200-entry) statistics.
+- **Removed C++14 override** — `-std=c++14` compile flag was overriding `CXX_STANDARD 17`.
+- **Parameterized IMU rate** — `odom/imu/nominalRate` replaces hardcoded 200 Hz fallback.
+- **Removed 10+ unused member variables** — Dead code cleanup from upstream ROS1 migration.
 
-### Performance Summary
-| Metric | Before | After |
-|--------|--------|-------|
-| Threads (idle) | 1049 | ~57 |
-| Threads (bag playback) | 1049 | ~89 |
-| RSS (bag playback) | ~150 MB | ~90 MB |
+### Platform Support
+- Tested on **x86-64** (AMD Ryzen 9950X, Ubuntu 22.04 + ROS Humble + Docker) and **ARM** (NVIDIA Jetson Orin NX 16G).
+- For Jetson: add `-march=armv8.2-a+fp16+dotprod` to CMakeLists for NEON acceleration. Reduce voxel resolution (`0.5`) and GICP iterations (`16`) if needed.
 
 ## License
 This work is licensed under the terms of the MIT license.
+
+The vendored libraries in `include/dlio/preintegration/` and `include/dlio/lie/` are
+licensed under BSD-2-Clause with a non-commercial condition. Copyright © University of
+Klagenfurt — Control of Networked Systems (CNS). See individual file headers for details.
 
 <br>
 <p align='center'>
