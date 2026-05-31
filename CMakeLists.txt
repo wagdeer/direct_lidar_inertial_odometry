@@ -91,7 +91,6 @@ install( DIRECTORY cfg launch
          DESTINATION share/${PROJECT_NAME} 
 )
 
-add_compile_options(-std=c++14)
 link_directories(${PCL_LIBRARY_DIRS})
 
 include(FindOpenMP)

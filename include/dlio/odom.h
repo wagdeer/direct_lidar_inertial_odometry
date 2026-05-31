@@ -104,7 +104,6 @@ private:
   void updateState();
 
   void setAdaptiveParams();
-  void setKeyframeCloud();
 
   void computeMetrics(const pcl::PointCloud<PointType>::ConstPtr& scan_snapshot, float density_snapshot);
   void computeSpaciousness(const pcl::PointCloud<PointType>::ConstPtr& scan_snapshot);
@@ -203,7 +202,6 @@ private:
   pcl::PointCloud<PointType>::ConstPtr current_scan;
 
   // Keyframes
-  pcl::PointCloud<PointType>::ConstPtr keyframe_cloud;
   int num_processed_keyframes;
 
   pcl::ConvexHull<PointType> convex_hull;
@@ -232,7 +230,6 @@ private:
   rclcpp::Time scan_header_stamp;
   double scan_stamp;
   double prev_scan_stamp;
-  double scan_dt;
   std::vector<double> comp_times;
   std::vector<double> imu_rates;
   std::vector<double> lidar_rates;
@@ -254,7 +251,6 @@ private:
 
   // Transformations
   Eigen::Matrix4f T, T_prior, T_corr;
-  Eigen::Quaternionf q_final;
 
   Eigen::Vector3f origin;
 
@@ -273,7 +269,8 @@ private:
   rclcpp::Time imu_stamp;
   double first_imu_stamp;
   double prev_imu_stamp;
-  double imu_dp, imu_dq_deg;
+  double prev_imu_stamp_for_transform_ = 0.;
+  Eigen::Vector3f prev_ang_vel_cg_ = Eigen::Vector3f::Zero();
 
   struct ImuMeas {
     double stamp;
@@ -333,7 +330,6 @@ private:
     Eigen::Quaternionf q; // orientation in world frame
   };
   Pose lidarPose;
-  Pose imuPose;
 
   // Metrics
   struct Metrics {
@@ -361,9 +357,6 @@ private:
 
   bool adaptive_params_;
 
-  double obs_submap_thresh_;
-  double obs_keyframe_thresh_;
-  double obs_keyframe_lag_;
 
   double keyframe_thresh_dist_;
   double keyframe_thresh_rot_;
@@ -371,7 +364,6 @@ private:
   int submap_knn_;
   int submap_kcv_;
   int submap_kcc_;
-  double submap_concave_alpha_;
 
   bool densemap_filtered_;
   bool wait_until_move_;
@@ -387,6 +379,7 @@ private:
   bool gravity_align_;
   double imu_calib_time_;
   int imu_buffer_size_;
+  double imu_nominal_rate_;
   Eigen::Matrix3f imu_accel_sm_;
 
   int gicp_min_num_points_;
