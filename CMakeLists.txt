@@ -51,24 +51,11 @@ include_directories(SYSTEM)
 
 # Equivariant IMU Preintegration (Lie group-based, replaces manual quaternion integration)
 
-# NanoFLANN
-add_library(nanoflann STATIC
-  src/nano_gicp/nanoflann.cc
-)
-target_link_libraries(nanoflann ${PCL_LIBRARIES})
-ament_target_dependencies(nanoflann)
-
-# NanoGICP
-add_library(nano_gicp STATIC
-  src/nano_gicp/lsq_registration.cc
-  src/nano_gicp/nano_gicp.cc
-)
-target_link_libraries(nano_gicp ${PCL_LIBRARIES} ${OpenMP_LIBS} nanoflann)
-ament_target_dependencies(nano_gicp)
+# small_gicp is vendored header-only in include/small_gicp/
 
 # Odometry Node
 add_executable(dlio_odom_node src/dlio/odom_node.cc src/dlio/odom.cc)
-target_link_libraries(dlio_odom_node ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp)
+target_link_libraries(dlio_odom_node ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads)
 ament_target_dependencies(dlio_odom_node "tf2_ros" "pcl_ros" "nav_msgs" "pcl_conversions" "rclcpp" "sensor_msgs" "geometry_msgs")
 
 # Mapping Node
@@ -77,7 +64,6 @@ target_link_libraries(dlio_map_node ${PCL_LIBRARIES}  ${cpp_typesupport_target})
 ament_target_dependencies(dlio_map_node "tf2_ros" "pcl_ros" "pcl_conversions" "rclcpp")
 
 ament_export_include_directories(include)
-ament_export_libraries(${PROJECT_NAME} nano_gicp nanoflann)
 ament_export_dependencies(rclcpp std_msgs sensor_msgs geometry_msgs pcl_ros)
 ament_package()
 
