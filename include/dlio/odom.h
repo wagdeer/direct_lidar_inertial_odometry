@@ -15,7 +15,7 @@
 #include "dlio/thread_pool.hpp"
 
 // Equivariant IMU preintegration (Lie group-based, replaces manual quaternion integration)
-#include "core/preintegration.hpp"
+#include "dlio/preintegration/preintegration.hpp"
 
 // ROS
 #include "rclcpp/rclcpp.hpp"

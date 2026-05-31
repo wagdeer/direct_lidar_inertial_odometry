@@ -50,8 +50,6 @@ include_directories(include)
 include_directories(SYSTEM)
 
 # Equivariant IMU Preintegration (Lie group-based, replaces manual quaternion integration)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../equivariant-preintegration/include)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../Lie-plusplus/include)
 
 # NanoFLANN
 add_library(nanoflann STATIC
