@@ -26,6 +26,9 @@
 #include "nav_msgs/msg/occupancy_grid.hpp"
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#ifdef HAS_LIVOX_DRIVER2
+#include <livox_ros_driver2/msg/custom_msg.hpp>
+#endif
 #include <tf2_ros/transform_broadcaster.h>
 
 // STL
@@ -68,6 +71,10 @@ private:
   void callbackPointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr pc);
   void callbackImu(const sensor_msgs::msg::Imu::SharedPtr imu);
 
+#ifdef HAS_LIVOX_DRIVER2
+  void callbackLivox(const livox_ros_driver2::msg::CustomMsg::SharedPtr msg);
+#endif
+
   void publishPose();
 
   void publishToROS(pcl::PointCloud<PointType>::ConstPtr published_cloud, Eigen::Matrix4f T_cloud);
@@ -79,6 +86,9 @@ private:
   void publishOccupancyMap(pcl::PointCloud<PointType>::Ptr cloud);
 
   void getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedPtr& pc);
+#ifdef HAS_LIVOX_DRIVER2
+  void getScanFromLivox(const livox_ros_driver2::msg::CustomMsg::SharedPtr& msg);
+#endif
   void preprocessPoints();
   void deskewPointcloud();
   void initializeInputTarget();
@@ -126,6 +136,10 @@ private:
   // Subscribers
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr lidar_sub;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub;
+#ifdef HAS_LIVOX_DRIVER2
+  rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_sub;
+  std::string lidar_driver_;  // "standard" or "livox"
+#endif
   rclcpp::CallbackGroup::SharedPtr lidar_cb_group, imu_cb_group;
 
   // Publishers

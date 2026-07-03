@@ -25,6 +25,15 @@ find_package(Boost COMPONENTS filesystem REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(visualization_msgs REQUIRED)
 
+# Optional: Livox driver2 for CustomMsg support
+find_package(livox_ros_driver2 QUIET)
+if(livox_ros_driver2_FOUND)
+  add_definitions(-DHAS_LIVOX_DRIVER2)
+  message(STATUS "livox_ros_driver2 found — building with Livox CustomMsg support")
+else()
+  message(STATUS "livox_ros_driver2 not found — building without Livox CustomMsg support")
+endif()
+
 find_package(PCL REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(Threads REQUIRED)
@@ -76,6 +85,9 @@ ament_target_dependencies(nano_gicp)
 add_executable(dlio_odom_node src/dlio/odom_node.cc src/dlio/odom.cc)
 target_link_libraries(dlio_odom_node ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp)
 ament_target_dependencies(dlio_odom_node "tf2_ros" "pcl_ros" "nav_msgs" "pcl_conversions" "rclcpp" "sensor_msgs" "geometry_msgs")
+if(livox_ros_driver2_FOUND)
+  target_link_libraries(dlio_odom_node livox_ros_driver2::livox_interfaces2__rosidl_typesupport_cpp)
+endif()
 
 # Mapping Node
 add_executable (dlio_map_node src/dlio/map_node.cc src/dlio/map.cc)

@@ -25,6 +25,12 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
   this->getParams();
 
+#ifdef HAS_LIVOX_DRIVER2
+  RCLCPP_INFO(this->get_logger(), "=== HAS_LIVOX_DRIVER2: YES | lidar_driver = '%s' ===", this->lidar_driver_.c_str());
+#else
+  RCLCPP_INFO(this->get_logger(), "=== HAS_LIVOX_DRIVER2: NO (compiled without livox_ros_driver2) ===");
+#endif
+
   // Allocate threads between thread pool and OpenMP to avoid oversubscription.
   // Pool handles parallel-for (deskew) and async tasks (submap, publish, metrics).
   // OpenMP is used internally by PCL/Eigen for compute-bound operations.
@@ -76,8 +82,22 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   this->lidar_cb_group = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   auto lidar_sub_opt = rclcpp::SubscriptionOptions();
   lidar_sub_opt.callback_group = this->lidar_cb_group;
+
+#ifdef HAS_LIVOX_DRIVER2
+  if (this->lidar_driver_ == "livox") {
+    RCLCPP_INFO(this->get_logger(), "LIDAR MODE: livox (CustomMsg)");
+    this->livox_sub = this->create_subscription<livox_ros_driver2::msg::CustomMsg>("pointcloud",
+        rclcpp::SensorDataQoS(),
+        std::bind(&dlio::OdomNode::callbackLivox, this, std::placeholders::_1), lidar_sub_opt);
+    RCLCPP_INFO(this->get_logger(), "Subscribed to Livox CustomMsg on topic 'pointcloud'");
+  } else {
+    this->lidar_sub = this->create_subscription<sensor_msgs::msg::PointCloud2>("pointcloud", 1,
+        std::bind(&dlio::OdomNode::callbackPointCloud, this, std::placeholders::_1), lidar_sub_opt);
+  }
+#else
   this->lidar_sub = this->create_subscription<sensor_msgs::msg::PointCloud2>("pointcloud", 1,
       std::bind(&dlio::OdomNode::callbackPointCloud, this, std::placeholders::_1), lidar_sub_opt);
+#endif
 
   this->imu_cb_group = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   auto imu_sub_opt = rclcpp::SubscriptionOptions();
@@ -251,6 +271,11 @@ void dlio::OdomNode::getParams() {
   dlio::declare_param(this, "frames/baselink", this->baselink_frame, "base_link");
   dlio::declare_param(this, "frames/lidar", this->lidar_frame, "lidar");
   dlio::declare_param(this, "frames/imu", this->imu_frame, "imu");
+
+#ifdef HAS_LIVOX_DRIVER2
+  // Lidar driver mode: "standard" (sensor_msgs::PointCloud2) or "livox" (CustomMsg)
+  dlio::declare_param(this, "lidar_driver", this->lidar_driver_, std::string("standard"));
+#endif
 
   // Deskew Flag
   dlio::declare_param(this, "pointcloud/deskew", this->deskew_, true);
@@ -787,6 +812,42 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
 
 }
 
+#ifdef HAS_LIVOX_DRIVER2
+void dlio::OdomNode::getScanFromLivox(const livox_ros_driver2::msg::CustomMsg::SharedPtr& msg) {
+
+  pcl::PointCloud<PointType>::Ptr original_scan_ = std::make_shared<pcl::PointCloud<PointType>>();
+  original_scan_->reserve(msg->point_num);
+
+  uint64_t timebase_ns = msg->timebase;
+
+  for (const auto& pt : msg->points) {
+    PointType p;
+    p.x = pt.x;
+    p.y = pt.y;
+    p.z = pt.z;
+    p.intensity = static_cast<float>(pt.reflectivity);
+    p.timestamp = static_cast<double>(timebase_ns) + static_cast<double>(pt.offset_time);
+    original_scan_->push_back(p);
+  }
+
+  // Remove NaNs
+  std::vector<int> idx;
+  original_scan_->is_dense = false;
+  pcl::removeNaNFromPointCloud(*original_scan_, *original_scan_, idx);
+
+  // Crop Box Filter
+  this->crop.setInputCloud(original_scan_);
+  this->crop.filter(*original_scan_);
+
+  // Livox driver always provides per-point timestamps
+  this->sensor = dlio::SensorType::LIVOX;
+
+  this->scan_header_stamp = msg->header.stamp;
+  this->original_scan = original_scan_;
+
+}
+#endif
+
 void dlio::OdomNode::preprocessPoints() {
 
   // Deskew the original dlio-type scan
@@ -843,6 +904,7 @@ void dlio::OdomNode::preprocessPoints() {
   } else {
     this->current_scan = this->deskewed_scan;
   }
+
 
 }
 
@@ -1004,7 +1066,103 @@ void dlio::OdomNode::initializeDLIO() {
 
 }
 
+#ifdef HAS_LIVOX_DRIVER2
+void dlio::OdomNode::callbackLivox(const livox_ros_driver2::msg::CustomMsg::SharedPtr msg) {
+
+  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+    "[LIVOX CB] stamp=%.3f  points=%u  lidar_id=%d",
+    rclcpp::Time(msg->header.stamp).seconds(), msg->point_num, msg->lidar_id);
+
+  std::unique_lock<decltype(this->main_loop_running_mutex)> lock(main_loop_running_mutex);
+  this->main_loop_running = true;
+  lock.unlock();
+
+  double then = this->now().seconds();
+
+  if (this->first_scan_stamp == 0.) {
+    this->first_scan_stamp = rclcpp::Time(msg->header.stamp).seconds();
+  }
+
+  // DLIO Initialization procedures (IMU calib, gravity align)
+  if (!this->dlio_initialized) {
+    this->initializeDLIO();
+  }
+
+  // Convert incoming Livox CustomMsg into DLIO format
+  this->getScanFromLivox(msg);
+
+  // Preprocess points
+  this->preprocessPoints();
+
+  if (!this->first_valid_scan) {
+    return;
+  }
+
+  if (this->current_scan->points.size() <= this->gicp_min_num_points_) {
+    RCLCPP_FATAL(this->get_logger(), "Low number of points in the cloud!");
+    return;
+  }
+
+  // Compute metrics
+  const auto scan_snapshot = this->original_scan;
+  const float density_snapshot = this->geo.first_opt_done ? this->gicp.source_density_ : 0.f;
+  if (!this->metrics_task_running_.exchange(true)) {
+    thread_pool.detach_task([this, scan_snapshot, density_snapshot]() {
+      try {
+        this->computeMetrics(scan_snapshot, density_snapshot);
+      } catch (...) {}
+      this->metrics_task_running_.store(false);
+    });
+  }
+
+  // Set Adaptive Parameters
+  if (this->adaptive_params_) {
+    this->setAdaptiveParams();
+  }
+
+  // Set new frame as input source
+  this->setInputSource();
+
+  // Set initial frame as first keyframe
+  if (this->keyframes.size() == 0) {
+    this->initializeInputTarget();
+    this->main_loop_running = false;
+    this->submap_future = thread_pool.submit_task([this]() {
+      this->buildKeyframesAndSubmap(this->state);
+    });
+    this->submap_future.wait();
+    return;
+  }
+
+  // Get the next pose via IMU + S2M + GEO
+  this->getNextPose();
+
+  // Update current keyframe poses and map
+  this->updateKeyframes();
+
+  // Build keyframe normals and submap if needed
+  if (this->new_submap_is_ready) {
+    this->main_loop_running = false;
+    this->submap_future = thread_pool.submit_task([this]() {
+      this->buildKeyframesAndSubmap(this->state);
+    });
+  } else {
+    lock.lock();
+    this->main_loop_running = false;
+    lock.unlock();
+  }
+
+  double now = this->now().seconds();
+  this->comp_times.push_back(now - then);
+  this->lidar_rates.push_back(1. / (now - then));
+}
+#endif
+
 void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr pc) {
+
+  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+    "[PCL2 CB] stamp=%.3f  points=%u",
+    rclcpp::Time(pc->header.stamp).seconds(), pc->width * pc->height);
 
   std::unique_lock<decltype(this->main_loop_running_mutex)> lock(main_loop_running_mutex);
   this->main_loop_running = true;
@@ -1291,6 +1449,9 @@ void dlio::OdomNode::getNextPose() {
     this->gicp.setTargetCovariances(this->submap_normals);
 
     this->submap_hasChanged = false;
+  } else if (!this->new_submap_is_ready) {
+    // First scan: no submap yet — use self as target (identity registration)
+    this->gicp.registerInputTarget(this->current_scan);
   }
 
   // Align with current submap with global IMU transformation as initial guess
