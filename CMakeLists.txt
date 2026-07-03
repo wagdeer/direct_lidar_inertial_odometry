@@ -20,6 +20,10 @@ find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(pcl_ros REQUIRED)
+find_package(GTSAM REQUIRED)
+find_package(Boost COMPONENTS filesystem REQUIRED)
+find_package(message_filters REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 find_package(PCL REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -45,6 +49,8 @@ rosidl_get_typesupport_target(cpp_typesupport_target
 
 include_directories(${PCL_INCLUDE_DIRS})
 include_directories(${EIGEN3_INCLUDE_DIR})
+include_directories(${GTSAM_INCLUDE_DIRS})
+include_directories(${Boost_INCLUDE_DIR})
 
 include_directories(include)
 include_directories(SYSTEM)
@@ -73,8 +79,8 @@ ament_target_dependencies(dlio_odom_node "tf2_ros" "pcl_ros" "nav_msgs" "pcl_con
 
 # Mapping Node
 add_executable (dlio_map_node src/dlio/map_node.cc src/dlio/map.cc)
-target_link_libraries(dlio_map_node ${PCL_LIBRARIES}  ${cpp_typesupport_target})
-ament_target_dependencies(dlio_map_node "tf2_ros" "pcl_ros" "pcl_conversions" "rclcpp")
+target_link_libraries(dlio_map_node ${PCL_LIBRARIES} ${Boost_LIBRARIES} gtsam ${cpp_typesupport_target})
+ament_target_dependencies(dlio_map_node "pcl_ros" "pcl_conversions" "rclcpp" "nav_msgs" "sensor_msgs" "std_msgs" "geometry_msgs" "visualization_msgs" "message_filters")
 
 ament_export_include_directories(include)
 ament_export_libraries(${PROJECT_NAME} nano_gicp nanoflann)
