@@ -16,7 +16,7 @@
     frames/odom: map
     frames/baselink: base_link
     frames/lidar: lidar
-    frames/imu: imu_link
+    frames/imu: odom
 
     map/waitUntilMove: false
     map/dense/filtered: true
