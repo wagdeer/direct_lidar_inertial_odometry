@@ -380,6 +380,11 @@ void dlio::OdomNode::getParams() {
   dlio::declare_param(this, "odom/gicp/maxCorrectionTranslation", this->gicp_max_corr_trans_, 1.0);
   dlio::declare_param(this, "odom/gicp/maxCorrectionRotationDeg", this->gicp_max_corr_rot_deg_, 20.0);
 
+  // Degeneracy detection (Ji Zhang ICRA 2016 + DALI-SLAM soft-threshold SVD)
+  dlio::declare_param(this, "odom/gicp/degeneracy/enabled", this->degeneracy_enabled_, false);
+  dlio::declare_param(this, "odom/gicp/degeneracy/eigenThresh", this->degeneracy_eigen_thresh_, 100.0);
+  dlio::declare_param(this, "odom/gicp/degeneracy/softThresh", this->degeneracy_soft_thresh_, 10.0);
+
   // Geometric Observer
   dlio::declare_param(this, "odom/geo/Kp", this->geo_Kp_, 1.0);
   dlio::declare_param(this, "odom/geo/Kv", this->geo_Kv_, 1.0);
@@ -1501,7 +1506,68 @@ void dlio::OdomNode::getNextPose() {
   this->gicp_hasConverged = converged;
   const auto& result = this->gicp.getRegistrationResult();
 
+  // ── Degeneracy Detection ────────────────────────
+  // Ji Zhang ICRA 2016 solution remapping + DALI-SLAM soft-threshold SVD.
+  // Filters the GICP correction so degenerate directions (e.g. tunnel forward)
+  // are softly suppressed — IMU preintegration carries those directions instead.
   Eigen::Matrix4f T_corr_candidate = this->gicp.getFinalTransformation();
+  if (this->degeneracy_enabled_) {
+    const Eigen::Matrix<double, 6, 6>& H = result.H;
+    const Eigen::Matrix<double, 6, 1>& b_vec = result.b;
+
+    // Phase 1: quick eigenvalue check — skip SVD if no degeneracy
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<double, 6, 6>> eigen_solver(H);
+    if (eigen_solver.info() == Eigen::Success) {
+      const double lambda_min = eigen_solver.eigenvalues().minCoeff();
+      if (lambda_min < this->degeneracy_eigen_thresh_) {
+        // Phase 2: SVD soft-threshold → filtered Hessian → filtered correction
+        Eigen::JacobiSVD<Eigen::Matrix<double, 6, 6>> svd(
+            H, Eigen::ComputeFullU | Eigen::ComputeFullV);
+        const auto& S = svd.singularValues();
+        const auto& U = svd.matrixU();
+        const auto& V = svd.matrixV();
+
+        // Build soft-thresholded diagonal: clip small singular values
+        Eigen::Matrix<double, 6, 6> S_filt = Eigen::Matrix<double, 6, 6>::Zero();
+        int n_degenerate = 0;
+        for (int i = 0; i < 6; ++i) {
+          if (S(i) > this->degeneracy_soft_thresh_) {
+            S_filt(i, i) = S(i);
+          } else {
+            S_filt(i, i) = this->degeneracy_soft_thresh_;  // floor, don't zero
+            ++n_degenerate;
+          }
+        }
+
+        // H_filtered = V * S_filt * U^T,  then ξ = -H_filtered^{-1} * b
+        // Since H = U*S*V^T with thin SVD on symmetric matrix (U≈V),
+        // H_filtered^{-1} = V * S_filt^{-1} * U^T
+        Eigen::Matrix<double, 6, 6> S_filt_inv = Eigen::Matrix<double, 6, 6>::Zero();
+        for (int i = 0; i < 6; ++i) {
+          S_filt_inv(i, i) = 1.0 / S_filt(i, i);
+        }
+        const Eigen::Matrix<double, 6, 1> xi =
+            -(V * S_filt_inv * U.transpose() * b_vec);
+
+        // Convert Lie algebra ξ → SE(3)
+        const Eigen::AngleAxisd rot(
+            xi.head<3>().norm(),
+            xi.head<3>().norm() > 1e-12 ? xi.head<3>().normalized()
+                                        : Eigen::Vector3d::UnitX());
+        T_corr_candidate = Eigen::Matrix4f::Identity();
+        T_corr_candidate.block<3, 3>(0, 0) = rot.toRotationMatrix().cast<float>();
+        T_corr_candidate.block<3, 1>(0, 3) = xi.tail<3>().cast<float>();
+
+        if (n_degenerate > 0) {
+          RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+            "Degeneracy: %d DOF suppressed (λ_min=%.1f < thresh=%.1f, soft=%.1f)",
+            n_degenerate, lambda_min, this->degeneracy_eigen_thresh_,
+            this->degeneracy_soft_thresh_);
+        }
+      }
+    }
+  }
+
   const Eigen::Vector3f t_corr = T_corr_candidate.block<3, 1>(0, 3);
   const double corr_trans = static_cast<double>(t_corr.norm());
 

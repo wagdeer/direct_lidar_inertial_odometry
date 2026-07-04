@@ -51,6 +51,10 @@
     odom/gicp/maxCorrectionTranslation: 1.0
     odom/gicp/maxCorrectionRotationDeg: 20.0
 
+    odom/gicp/degeneracy/enabled: false
+    odom/gicp/degeneracy/eigenThresh: 100.0
+    odom/gicp/degeneracy/softThresh: 10.0
+
     odom/geo/Kp: 4.5
     odom/geo/Kv: 11.25
     odom/geo/Kq: 4.0

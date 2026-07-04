@@ -408,6 +408,10 @@ private:
   double gicp_max_corr_trans_;
   double gicp_max_corr_rot_deg_;
 
+  bool degeneracy_enabled_;
+  double degeneracy_eigen_thresh_;
+  double degeneracy_soft_thresh_;
+
   double geo_Kp_;
   double geo_Kv_;
   double geo_Kq_;
