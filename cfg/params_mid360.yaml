@@ -19,7 +19,7 @@
     frames/imu: odom
 
     # Lidar message type: "standard" (sensor_msgs/PointCloud2) or "livox" (CustomMsg)
-    lidar_driver: "livox"
+    lidar_driver: "standard"
 
     map/waitUntilMove: false
     map/dense/filtered: true

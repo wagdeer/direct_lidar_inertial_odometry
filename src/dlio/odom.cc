@@ -818,15 +818,14 @@ void dlio::OdomNode::getScanFromLivox(const livox_ros_driver2::msg::CustomMsg::S
   pcl::PointCloud<PointType>::Ptr original_scan_ = std::make_shared<pcl::PointCloud<PointType>>();
   original_scan_->reserve(msg->point_num);
 
-  uint64_t timebase_ns = msg->timebase;
-
   for (const auto& pt : msg->points) {
     PointType p;
     p.x = pt.x;
     p.y = pt.y;
     p.z = pt.z;
     p.intensity = static_cast<float>(pt.reflectivity);
-    p.timestamp = static_cast<double>(timebase_ns) + static_cast<double>(pt.offset_time);
+    // Relative offset in nanoseconds (matching PointCloud2 path behavior)
+    p.timestamp = static_cast<double>(pt.offset_time);
     original_scan_->push_back(p);
   }
 
@@ -953,6 +952,20 @@ void dlio::OdomNode::deskewPointcloud() {
   unique_time_indices.emplace_back(deskewed_scan_->points.size());
 
   int median_pt_index = timestamps.size() / 2;
+
+  // Guard: if all points share the same timestamp, fall back to simple transform
+  if (timestamps.empty()) {
+    RCLCPP_WARN(this->get_logger(),
+      "All points share the same timestamp — skipping per-point deskew.");
+    this->T_prior = this->T;
+    pcl::transformPointCloud(*deskewed_scan_, *deskewed_scan_,
+                             this->T_prior * this->extrinsics.baselink2lidar_T);
+    this->deskewed_scan = deskewed_scan_;
+    this->deskew_status = false;
+    this->scan_stamp = sweep_ref_time;
+    return;
+  }
+
   this->scan_stamp = timestamps[median_pt_index]; // set this->scan_stamp to the timestamp of the median point
 
   // don't process scans until IMU data is present
@@ -1103,14 +1116,16 @@ void dlio::OdomNode::callbackLivox(const livox_ros_driver2::msg::CustomMsg::Shar
     return;
   }
 
-  // Compute metrics
+  // Compute metrics on per-frame snapshots to avoid races with async execution.
   const auto scan_snapshot = this->original_scan;
   const float density_snapshot = this->geo.first_opt_done ? this->gicp.source_density_ : 0.f;
   if (!this->metrics_task_running_.exchange(true)) {
     thread_pool.detach_task([this, scan_snapshot, density_snapshot]() {
       try {
         this->computeMetrics(scan_snapshot, density_snapshot);
-      } catch (...) {}
+      } catch (...) {
+        // Keep async metrics failures from permanently disabling scheduling.
+      }
       this->metrics_task_running_.store(false);
     });
   }
@@ -1130,7 +1145,7 @@ void dlio::OdomNode::callbackLivox(const livox_ros_driver2::msg::CustomMsg::Shar
     this->submap_future = thread_pool.submit_task([this]() {
       this->buildKeyframesAndSubmap(this->state);
     });
-    this->submap_future.wait();
+    this->submap_future.wait(); // wait until completion
     return;
   }
 
@@ -1140,7 +1155,7 @@ void dlio::OdomNode::callbackLivox(const livox_ros_driver2::msg::CustomMsg::Shar
   // Update current keyframe poses and map
   this->updateKeyframes();
 
-  // Build keyframe normals and submap if needed
+  // Build keyframe normals and submap if needed (and if we're not already waiting)
   if (this->new_submap_is_ready) {
     this->main_loop_running = false;
     this->submap_future = thread_pool.submit_task([this]() {
@@ -1150,11 +1165,54 @@ void dlio::OdomNode::callbackLivox(const livox_ros_driver2::msg::CustomMsg::Shar
     lock.lock();
     this->main_loop_running = false;
     lock.unlock();
+    this->submap_build_cv.notify_one();
   }
 
-  double now = this->now().seconds();
-  this->comp_times.push_back(now - then);
-  this->lidar_rates.push_back(1. / (now - then));
+  // Update trajectory and incrementally accumulate traveled distance.
+  this->trajectory.emplace_back(std::make_pair(this->state.p, this->state.q));
+  if (!this->length_ref_pose_.has_value()) {
+    this->length_ref_pose_ = this->state.p;
+  } else {
+    const Eigen::Vector3f dp = this->state.p - this->length_ref_pose_.value();
+    const double step_distance = dp.norm();
+    if (step_distance >= 0.1) {
+      this->length_traversed += step_distance;
+      this->length_ref_pose_ = this->state.p;
+    }
+  }
+
+  // Update time stamps
+  if (this->debug_) {
+    this->lidar_rates.push_back(1. / (this->scan_stamp - this->prev_scan_stamp));
+  }
+  this->prev_scan_stamp = this->scan_stamp;
+  this->elapsed_time = this->scan_stamp - this->first_scan_stamp;
+
+  // Publish stuff to ROS
+  pcl::PointCloud<PointType>::ConstPtr published_cloud;
+  if (this->densemap_filtered_) {
+    published_cloud = this->current_scan;
+  } else {
+    published_cloud = this->deskewed_scan;
+  }
+
+  // publish to ros in thread pool
+  const Eigen::Matrix4f T_corr_snapshot = this->T_corr;
+  thread_pool.detach_task([this, published_cloud, T_corr_snapshot]() {
+    this->publishToROS(published_cloud, T_corr_snapshot);
+  });
+
+  this->gicp_hasConverged = this->gicp.hasConverged();
+
+  if (this->debug_) {
+    this->comp_times.push_back(this->now().seconds() - then);
+    thread_pool.detach_task([this]() {
+      this->debug();
+    });
+  }
+
+  this->geo.first_opt_done = true;
+
 }
 #endif
 
@@ -1448,10 +1506,22 @@ void dlio::OdomNode::getNextPose() {
     // Set target cloud's normals as submap normals
     this->gicp.setTargetCovariances(this->submap_normals);
 
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+      "[getNextPose] TARGET SET: submap_cloud=%zu  submap_kdtree=%zu  submap_normals=%zu",
+      this->submap_cloud ? this->submap_cloud->size() : 0,
+      (this->submap_kdtree && this->submap_kdtree->getInputCloud()) ? this->submap_kdtree->getInputCloud()->size() : 0,
+      this->submap_normals ? this->submap_normals->size() : 0);
+
     this->submap_hasChanged = false;
   } else if (!this->new_submap_is_ready) {
-    // First scan: no submap yet — use self as target (identity registration)
-    this->gicp.registerInputTarget(this->current_scan);
+    // Submap not ready yet: use current scan as target with proper KD-tree setup.
+    // Must use setInputTarget (not registerInputTarget) to rebuild the KD-tree
+    // and reset covs, otherwise the stale submap KD-tree will cause out-of-range
+    // crashes when computeTransformation recalculates target covariances.
+    this->gicp.setInputTarget(this->current_scan);
+    this->gicp.calculateTargetCovariances();
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+      "[getNextPose] FALLBACK: using current_scan as target (size=%zu)", this->current_scan->size());
   }
 
   // Align with current submap with global IMU transformation as initial guess

@@ -207,6 +207,16 @@ void NanoGICP<PointSource, PointTarget>::update_correspondences(const Eigen::Iso
   assert(source_covs_ != nullptr && source_covs_->size() == input_->size());
   assert(target_covs_ != nullptr && target_covs_->size() == target_->size());
 
+  // Diagnostic: check KD-tree consistency
+  if (target_kdtree_ && target_kdtree_->getInputCloud()) {
+    const size_t kdtree_cloud_size = target_kdtree_->getInputCloud()->size();
+    if (kdtree_cloud_size != target_->size()) {
+      std::cerr << "[NanoGICP::update_correspondences] KD-TREE / TARGET MISMATCH: "
+                << "target_cloud=" << target_->size()
+                << " kdtree_cloud=" << kdtree_cloud_size << std::endl;
+    }
+  }
+
   Eigen::Isometry3f trans_f = trans.cast<float>();
 
   correspondences_.resize(input_->size());
@@ -333,7 +343,14 @@ bool NanoGICP<PointSource, PointTarget>::calculate_covariances(
   CovarianceList& covariances,
   float& density) {
 
-  covariances.resize(cloud->size());
+  const size_t cloud_size = cloud->size();
+  const size_t kdtree_size = kdtree.getInputCloud()->size();
+  if (cloud_size != kdtree_size) {
+    std::cerr << "[NanoGICP::calculate_covariances] SIZE MISMATCH: cloud=" << cloud_size
+              << " kdtree_cloud=" << kdtree_size << std::endl;
+  }
+
+  covariances.resize(cloud_size);
   float sum_k_sq_distances = 0.0;
 
 #pragma omp parallel for num_threads(num_threads_) schedule(guided, 8) reduction(+:sum_k_sq_distances)
@@ -347,6 +364,11 @@ bool NanoGICP<PointSource, PointTarget>::calculate_covariances(
 
     Eigen::Matrix<double, 4, -1> neighbors(4, k_correspondences_);
     for (int j = 0; j < k_indices.size(); j++) {
+      if (k_indices[j] < 0 || k_indices[j] >= static_cast<int>(cloud->size())) {
+        std::cerr << "[NanoGICP::calculate_covariances] KD-tree returned out-of-range index: "
+                  << k_indices[j] << " (cloud size=" << cloud->size() << ")" << std::endl;
+        continue;
+      }
       neighbors.col(j) = cloud->at(k_indices[j]).getVector4fMap().template cast<double>();
     }
 
