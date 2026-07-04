@@ -194,7 +194,6 @@ private:
   std::vector<std::pair<std::pair<Eigen::Vector3f, Eigen::Quaternionf>,
                         pcl::PointCloud<PointType>::ConstPtr>> keyframes;
   std::vector<rclcpp::Time> keyframe_timestamps;
-  std::vector<std::shared_ptr<const nano_gicp::CovarianceList>> keyframe_normals;
   std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>> keyframe_transformations;
   std::mutex keyframes_mutex;
 
@@ -229,8 +228,6 @@ private:
 
   // Submap
   pcl::PointCloud<PointType>::ConstPtr submap_cloud;
-  std::shared_ptr<const nano_gicp::CovarianceList> submap_normals;
-  std::shared_ptr<const nanoflann::KdTreeFLANN<PointType>> submap_kdtree;
 
   std::vector<int> submap_kf_idx_curr;
   std::vector<int> submap_kf_idx_prev;
@@ -253,8 +250,7 @@ private:
   double elapsed_time;
 
   // GICP
-  nano_gicp::NanoGICP<PointType, PointType> gicp;
-  nano_gicp::NanoGICP<PointType, PointType> gicp_temp;
+  small_gicp::RegistrationPCL<PointType, PointType> gicp;
 
   // Occupancy Map
   bool occupancy_enable;
@@ -405,7 +401,12 @@ private:
   int gicp_max_iter_;
   double gicp_transformation_ep_;
   double gicp_rotation_ep_;
-  double gicp_init_lambda_factor_;
+  bool gicp_require_converged_;
+  int gicp_min_inliers_;
+  double gicp_max_error_;
+  bool gicp_reject_large_correction_;
+  double gicp_max_corr_trans_;
+  double gicp_max_corr_rot_deg_;
 
   double geo_Kp_;
   double geo_Kv_;

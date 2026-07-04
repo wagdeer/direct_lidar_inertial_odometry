@@ -44,7 +44,12 @@
     odom/gicp/maxIterations: 32
     odom/gicp/transformationEpsilon: 0.01
     odom/gicp/rotationEpsilon: 0.01
-    odom/gicp/initLambdaFactor: 1e-9
+    odom/gicp/requireConverged: false
+    odom/gicp/minInliers: 0
+    odom/gicp/maxError: -1.0
+    odom/gicp/rejectLargeCorrection: false
+    odom/gicp/maxCorrectionTranslation: 1.0
+    odom/gicp/maxCorrectionRotationDeg: 20.0
 
     odom/geo/Kp: 4.5
     odom/geo/Kv: 11.25
