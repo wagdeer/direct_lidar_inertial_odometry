@@ -43,7 +43,7 @@
 #include <pcl/io/pcd_io.h>
 
 // nanoflann (DLIO built-in)
-#include <nano_gicp/nanoflann.hpp>
+#include <nanoflann.hpp>
 
 // GTSAM
 #include <gtsam/geometry/Rot3.h>
