@@ -2068,7 +2068,6 @@ void dlio::OdomNode::updateKeyframes() {
     std::unique_lock<decltype(this->keyframes_mutex)> lock(this->keyframes_mutex);
     this->keyframes.emplace_back(std::make_pair(std::make_pair(this->lidarPose.p, this->lidarPose.q), this->current_scan));
     this->keyframe_timestamps.emplace_back(this->scan_header_stamp);
-    this->keyframe_normals.emplace_back(this->gicp.getSourceCovariances());
     this->keyframe_transformations.emplace_back(this->T_corr);
     lock.unlock();
   }
