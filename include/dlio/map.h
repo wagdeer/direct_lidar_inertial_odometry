@@ -43,7 +43,7 @@
 #include <pcl/io/pcd_io.h>
 
 // nanoflann (DLIO built-in)
-#include <nano_gicp/nanoflann.h>
+#include <nano_gicp/nanoflann.hpp>
 
 // GTSAM
 #include <gtsam/geometry/Rot3.h>
@@ -82,7 +82,7 @@ public:
   typedef std::lock_guard<std::mutex> MtxLockGuard;
   typedef std::shared_ptr<Eigen::Affine3d> Affine3dPtr;
   typedef Eigen::Matrix<double, Eigen::Dynamic, 3> KDTreeMatrix;
-  typedef nanoflann::KDTreeEigenMatrixAdaptor<KDTreeMatrix, 3, nanoflann::metric_L2_Simple> KDTree;
+  typedef nanoflann::KDTreeEigenMatrixAdaptor<KDTreeMatrix, 3, nanoflann::metric_L2_Simple, true> KDTree;
   typedef nanoflann::RadiusResultSet<double, long int> RadiusResultSet;
   typedef std::pair<int, int> LoopEdgeID;
   typedef message_filters::sync_policies::ApproximateTime<

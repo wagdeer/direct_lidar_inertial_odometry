@@ -49,7 +49,7 @@
 #include <pcl/point_types.h>
 #include <pcl/kdtree/kdtree_flann.h>
 
-#include "nano_gicp/nanoflann.h"
+#include "nano_gicp/nanoflann.hpp"
 
 namespace nanoflann
 {
@@ -86,7 +86,7 @@ public:
 
 protected:
 
-  nanoflann::SearchParams _params;
+  nanoflann::SearchParameters _params;
 
   struct PointCloud_Adaptor
   {
@@ -156,7 +156,7 @@ int KdTreeFLANN<PointT>::radiusSearch(const PointT &point, double radius,
                               std::vector<int> &k_indices,
                               std::vector<float> &k_sqr_distances) const
 {
-  static std::vector<std::pair<int, float> > indices_dist;
+  static std::vector<nanoflann::ResultItem<int, float>> indices_dist;
   indices_dist.reserve( 128 );
 
   RadiusResultSet<float, int> resultSet(radius, indices_dist);

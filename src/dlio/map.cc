@@ -359,9 +359,9 @@ bool dlio::MapNode::buildKDTreeMat(KDTreeMatrix& mat) {
 int dlio::MapNode::searchTarget(const KDTree& kdtree, int id_query,
                                 const Eigen::Affine3d& pose_query,
                                 const rclcpp::Time& stamp_query) {
-  std::vector<std::pair<long int, double>> ret_matches;
-  nanoflann::SearchParams sp(0, true);
-  kdtree.index->radiusSearch(pose_query.translation().data(), search_radius_, ret_matches, sp);
+  std::vector<nanoflann::ResultItem<long int, double>> ret_matches;
+  nanoflann::SearchParameters sp(0, true);
+  (void)kdtree.index_->radiusSearch(pose_query.translation().data(), search_radius_, ret_matches, sp);
 
   Eigen::Quaterniond q_query(pose_query.rotation());
 
@@ -456,7 +456,7 @@ bool dlio::MapNode::buildLoopEdge(gtsam::NonlinearFactorGraph& graph) {
     return false;
 
   KDTree kdtree(3, std::cref(kdtree_mat), 10);
-  kdtree.index->buildIndex();
+  kdtree.index_->buildIndex();
 
   Eigen::Affine3d opt_last;
   int opt_last_id;
