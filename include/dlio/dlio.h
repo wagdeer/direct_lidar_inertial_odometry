@@ -54,8 +54,6 @@ std::string to_string_with_precision(const T a_value, const int n = 6)
 #include <small_gicp/pcl/pcl_registration.hpp>
 
 namespace dlio {
-  enum class SensorType { LIVOX, UNKNOWN };
-
   class OdomNode;
   class MapNode;
 

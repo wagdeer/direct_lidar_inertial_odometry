@@ -25,12 +25,6 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
   this->getParams();
 
-#ifdef HAS_LIVOX_DRIVER2
-  RCLCPP_INFO(this->get_logger(), "=== HAS_LIVOX_DRIVER2: YES | lidar_driver = '%s' ===", this->lidar_driver_.c_str());
-#else
-  RCLCPP_INFO(this->get_logger(), "=== HAS_LIVOX_DRIVER2: NO (compiled without livox_ros_driver2) ===");
-#endif
-
   // Allocate threads between thread pool and OpenMP to avoid oversubscription.
   // Pool handles parallel-for (deskew) and async tasks (submap, publish, metrics).
   // OpenMP is used internally by PCL/Eigen for compute-bound operations.
@@ -83,21 +77,8 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   auto lidar_sub_opt = rclcpp::SubscriptionOptions();
   lidar_sub_opt.callback_group = this->lidar_cb_group;
 
-#ifdef HAS_LIVOX_DRIVER2
-  if (this->lidar_driver_ == "livox") {
-    RCLCPP_INFO(this->get_logger(), "LIDAR MODE: livox (CustomMsg)");
-    this->livox_sub = this->create_subscription<livox_ros_driver2::msg::CustomMsg>("pointcloud",
-        rclcpp::SensorDataQoS(),
-        std::bind(&dlio::OdomNode::callbackLivox, this, std::placeholders::_1), lidar_sub_opt);
-    RCLCPP_INFO(this->get_logger(), "Subscribed to Livox CustomMsg on topic 'pointcloud'");
-  } else {
-    this->lidar_sub = this->create_subscription<sensor_msgs::msg::PointCloud2>("pointcloud", 1,
-        std::bind(&dlio::OdomNode::callbackPointCloud, this, std::placeholders::_1), lidar_sub_opt);
-  }
-#else
   this->lidar_sub = this->create_subscription<sensor_msgs::msg::PointCloud2>("pointcloud", 1,
       std::bind(&dlio::OdomNode::callbackPointCloud, this, std::placeholders::_1), lidar_sub_opt);
-#endif
 
   this->imu_cb_group = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   auto imu_sub_opt = rclcpp::SubscriptionOptions();
@@ -257,11 +238,6 @@ void dlio::OdomNode::getParams() {
   dlio::declare_param(this, "frames/baselink", this->baselink_frame, "base_link");
   dlio::declare_param(this, "frames/lidar", this->lidar_frame, "lidar");
   dlio::declare_param(this, "frames/imu", this->imu_frame, "imu");
-
-#ifdef HAS_LIVOX_DRIVER2
-  // Lidar driver mode: "standard" (sensor_msgs::PointCloud2) or "livox" (CustomMsg)
-  dlio::declare_param(this, "lidar_driver", this->lidar_driver_, std::string("standard"));
-#endif
 
   // Deskew Flag
   dlio::declare_param(this, "pointcloud/deskew", this->deskew_, true);
@@ -788,8 +764,7 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
   this->crop.setInputCloud(original_scan_);
   this->crop.filter(*original_scan_);
 
-  // only support Livox
-  this->sensor = dlio::SensorType::LIVOX;
+  // Check for per-point timestamps; disable deskew if none
   bool has_timestamp_field = false;
   for (auto &field : pc->fields) {
     if (field.name == "timestamp") {
@@ -799,49 +774,12 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
   }
   
   if (!has_timestamp_field) {
-    this->sensor = dlio::SensorType::UNKNOWN;
     this->deskew_ = false;
   }
 
   this->scan_header_stamp = pc->header.stamp;
   this->original_scan = original_scan_;
-
 }
-
-#ifdef HAS_LIVOX_DRIVER2
-void dlio::OdomNode::getScanFromLivox(const livox_ros_driver2::msg::CustomMsg::SharedPtr& msg) {
-
-  pcl::PointCloud<PointType>::Ptr original_scan_ = std::make_shared<pcl::PointCloud<PointType>>();
-  original_scan_->reserve(msg->point_num);
-
-  for (const auto& pt : msg->points) {
-    PointType p;
-    p.x = pt.x;
-    p.y = pt.y;
-    p.z = pt.z;
-    p.intensity = static_cast<float>(pt.reflectivity);
-    // Relative offset in nanoseconds (matching PointCloud2 path behavior)
-    p.timestamp = static_cast<double>(pt.offset_time);
-    original_scan_->push_back(p);
-  }
-
-  // Remove NaNs
-  std::vector<int> idx;
-  original_scan_->is_dense = false;
-  pcl::removeNaNFromPointCloud(*original_scan_, *original_scan_, idx);
-
-  // Crop Box Filter
-  this->crop.setInputCloud(original_scan_);
-  this->crop.filter(*original_scan_);
-
-  // Livox driver always provides per-point timestamps
-  this->sensor = dlio::SensorType::LIVOX;
-
-  this->scan_header_stamp = msg->header.stamp;
-  this->original_scan = original_scan_;
-
-}
-#endif
 
 void dlio::OdomNode::preprocessPoints() {
 
@@ -935,9 +873,12 @@ void dlio::OdomNode::deskewPointcloud() {
   std::vector<int> unique_time_indices;
 
   // compute offset between sweep reference time and first point timestamp
-  double offset = 0.0;
+  // Point timestamps are relative offsets within the scan.
+  // IMU integration below needs absolute timestamps — always add sweep_ref_time.
+  double offset = sweep_ref_time;
   if (this->time_offset_) {
-    offset = sweep_ref_time - extract_point_time(*points_unique_timestamps.begin());
+    // Optionally compensate for systematic offset between header and first point
+    offset -= extract_point_time(*points_unique_timestamps.begin());
   }
 
   // build list of unique timestamps and indices of first point with each timestamp
@@ -962,16 +903,27 @@ void dlio::OdomNode::deskewPointcloud() {
     return;
   }
 
-  this->scan_stamp = timestamps[median_pt_index]; // set this->scan_stamp to the timestamp of the median point
+  this->scan_stamp = sweep_ref_time; // use header timestamp as scan reference (absolute)
 
   // don't process scans until IMU data is present
   if (!this->first_valid_scan) {
     if (this->imu_buffer.empty() || this->scan_stamp <= this->imu_buffer.back().stamp) {
+      if (this->debug_) {
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+          "[DESKEW] waiting for IMU: buffer_empty=%d buf_size=%lu scan_stamp=%.6f buf_back_stamp=%.6f",
+          this->imu_buffer.empty(), this->imu_buffer.size(),
+          this->scan_stamp,
+          this->imu_buffer.empty() ? -1.0 : this->imu_buffer.back().stamp);
+      }
       return;
     }
 
     this->first_valid_scan = true;
     this->T_prior = this->T; // assume no motion for the first scan
+    if (this->debug_) {
+      RCLCPP_INFO(this->get_logger(), "[DESKEW] first valid scan! scan_stamp=%.6f buf_back=%.6f buf_size=%lu",
+        this->scan_stamp, this->imu_buffer.back().stamp, this->imu_buffer.size());
+    }
     pcl::transformPointCloud (*deskewed_scan_, *deskewed_scan_, this->T_prior * this->extrinsics.baselink2lidar_T);
     this->deskewed_scan = deskewed_scan_;
     this->deskew_status = true;
@@ -1073,143 +1025,6 @@ void dlio::OdomNode::initializeDLIO() {
 
 }
 
-#ifdef HAS_LIVOX_DRIVER2
-void dlio::OdomNode::callbackLivox(const livox_ros_driver2::msg::CustomMsg::SharedPtr msg) {
-
-  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-    "[LIVOX CB] stamp=%.3f  points=%u  lidar_id=%d",
-    rclcpp::Time(msg->header.stamp).seconds(), msg->point_num, msg->lidar_id);
-
-  std::unique_lock<decltype(this->main_loop_running_mutex)> lock(main_loop_running_mutex);
-  this->main_loop_running = true;
-  lock.unlock();
-
-  double then = this->now().seconds();
-
-  if (this->first_scan_stamp == 0.) {
-    this->first_scan_stamp = rclcpp::Time(msg->header.stamp).seconds();
-  }
-
-  // DLIO Initialization procedures (IMU calib, gravity align)
-  if (!this->dlio_initialized) {
-    this->initializeDLIO();
-  }
-
-  // Convert incoming Livox CustomMsg into DLIO format
-  this->getScanFromLivox(msg);
-
-  // Preprocess points
-  this->preprocessPoints();
-
-  if (!this->first_valid_scan) {
-    return;
-  }
-
-  if (this->current_scan->points.size() <= this->gicp_min_num_points_) {
-    RCLCPP_FATAL(this->get_logger(), "Low number of points in the cloud!");
-    return;
-  }
-
-  // Compute metrics on per-frame snapshots to avoid races with async execution.
-  const auto scan_snapshot = this->original_scan;
-  const float density_snapshot = this->geo.first_opt_done ? 0.0f : 0.f;
-  if (!this->metrics_task_running_.exchange(true)) {
-    thread_pool.detach_task([this, scan_snapshot, density_snapshot]() {
-      try {
-        this->computeMetrics(scan_snapshot, density_snapshot);
-      } catch (...) {
-        // Keep async metrics failures from permanently disabling scheduling.
-      }
-      this->metrics_task_running_.store(false);
-    });
-  }
-
-  // Set Adaptive Parameters
-  if (this->adaptive_params_) {
-    this->setAdaptiveParams();
-  }
-
-  // Set new frame as input source
-  this->setInputSource();
-
-  // Set initial frame as first keyframe
-  if (this->keyframes.size() == 0) {
-    this->initializeInputTarget();
-    this->main_loop_running = false;
-    this->submap_future = thread_pool.submit_task([this]() {
-      this->buildKeyframesAndSubmap(this->state);
-    });
-    this->submap_future.wait(); // wait until completion
-    return;
-  }
-
-  // Get the next pose via IMU + S2M + GEO
-  this->getNextPose();
-
-  // Update current keyframe poses and map
-  this->updateKeyframes();
-
-  // Build keyframe normals and submap if needed (and if we're not already waiting)
-  if (this->new_submap_is_ready) {
-    this->main_loop_running = false;
-    this->submap_future = thread_pool.submit_task([this]() {
-      this->buildKeyframesAndSubmap(this->state);
-    });
-  } else {
-    lock.lock();
-    this->main_loop_running = false;
-    lock.unlock();
-    this->submap_build_cv.notify_one();
-  }
-
-  // Update trajectory and incrementally accumulate traveled distance.
-  this->trajectory.emplace_back(std::make_pair(this->state.p, this->state.q));
-  if (!this->length_ref_pose_.has_value()) {
-    this->length_ref_pose_ = this->state.p;
-  } else {
-    const Eigen::Vector3f dp = this->state.p - this->length_ref_pose_.value();
-    const double step_distance = dp.norm();
-    if (step_distance >= 0.1) {
-      this->length_traversed += step_distance;
-      this->length_ref_pose_ = this->state.p;
-    }
-  }
-
-  // Update time stamps
-  if (this->debug_) {
-    this->lidar_rates.push_back(1. / (this->scan_stamp - this->prev_scan_stamp));
-  }
-  this->prev_scan_stamp = this->scan_stamp;
-  this->elapsed_time = this->scan_stamp - this->first_scan_stamp;
-
-  // Publish stuff to ROS
-  pcl::PointCloud<PointType>::ConstPtr published_cloud;
-  if (this->densemap_filtered_) {
-    published_cloud = this->current_scan;
-  } else {
-    published_cloud = this->deskewed_scan;
-  }
-
-  // publish to ros in thread pool
-  const Eigen::Matrix4f T_corr_snapshot = this->T_corr;
-  thread_pool.detach_task([this, published_cloud, T_corr_snapshot]() {
-    this->publishToROS(published_cloud, T_corr_snapshot);
-  });
-
-  this->gicp_hasConverged = this->gicp.hasConverged();
-
-  if (this->debug_) {
-    this->comp_times.push_back(this->now().seconds() - then);
-    thread_pool.detach_task([this]() {
-      this->debug();
-    });
-  }
-
-  this->geo.first_opt_done = true;
-
-}
-#endif
-
 void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr pc) {
 
   RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
@@ -1239,6 +1054,12 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
 
   if (!this->first_valid_scan) {
     return;
+  }
+
+  if (this->debug_) {
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+      "[PIPELINE] processing scan: %lu pts  T(0,3)=%.3f",
+      this->current_scan->points.size(), this->T(0,3));
   }
 
   if (this->current_scan->points.size() <= this->gicp_min_num_points_) {
@@ -1346,6 +1167,12 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
 }
 
 void dlio::OdomNode::callbackImu(const sensor_msgs::msg::Imu::SharedPtr imu_raw) {
+
+  if (this->debug_) {
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+      "[IMU CB] stamp=%.3f  seq=%u",
+      rclcpp::Time(imu_raw->header.stamp).seconds(), imu_raw->header.stamp.nanosec % 1000000);
+  }
 
   this->first_imu_received = true;
 
@@ -2424,17 +2251,10 @@ void dlio::OdomNode::debug() {
       << "|" << std::endl;
   }
 
-  if (this->sensor == dlio::SensorType::LIVOX) {
-    std::cout << "| " << std::left << std::setfill(' ') << std::setw(66)
-      << "Sensor Rates: Livox @ " + to_string_with_precision(avg_lidar_rate, 2)
+  std::cout << "| " << std::left << std::setfill(' ') << std::setw(66)
+      << "Sensor Rates: LiDAR @ " + to_string_with_precision(avg_lidar_rate, 2)
                                   + " Hz, IMU @ " + to_string_with_precision(avg_imu_rate, 2) + " Hz"
       << "|" << std::endl;
-  } else {
-    std::cout << "| " << std::left << std::setfill(' ') << std::setw(66)
-      << "Sensor Rates: Unknown LiDAR @ " + to_string_with_precision(avg_lidar_rate, 2)
-                                          + " Hz, IMU @ " + to_string_with_precision(avg_imu_rate, 2) + " Hz"
-      << "|" << std::endl;
-  }
 
   std::cout << "|===================================================================|" << std::endl;
 
