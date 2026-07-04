@@ -15,8 +15,8 @@
     use_sim_time: true
     frames/odom: map
     frames/baselink: base_link
-    frames/lidar: livox_frame
-    frames/imu: odom
+    frames/lidar: lidar
+    frames/imu: imu_link
 
     map/waitUntilMove: false
     map/dense/filtered: true
