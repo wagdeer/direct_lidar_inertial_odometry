@@ -64,6 +64,11 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   this->pim_.emplace(this->pim_params_);
   this->pim_propagate_.emplace(this->pim_params_);
 
+  // OctVoxMap: incremental spatial voxel map for submap keyframe selection.
+  // Replaces PCL ConvexHull/ConcaveHull. Resolution = keyframe_thresh_dist_.
+  typename VoxelMap::Options voxel_opts(this->keyframe_thresh_dist_, 1000000);
+  this->keyframe_voxel_map_.SetOptions(voxel_opts);
+
   this->dlio_initialized = false;
   this->first_valid_scan = false;
   this->first_imu_received = false;
@@ -154,11 +159,6 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   this->imu_rates.set_capacity(200);
   this->lidar_rates.set_capacity(200);
   this->cpu_percents.set_capacity(200);
-
-  this->convex_hull.setDimension(3);
-  this->concave_hull.setDimension(3);
-  this->concave_hull.setAlpha(this->keyframe_thresh_dist_);
-  this->concave_hull.setKeepInformation(true);
 
   this->gicp.setCorrespondenceRandomness(this->gicp_k_correspondences_);
   this->gicp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_);
@@ -256,6 +256,8 @@ void dlio::OdomNode::getParams() {
   dlio::declare_param(this, "odom/submap/keyframe/knn", this->submap_knn_, 10);
   dlio::declare_param(this, "odom/submap/keyframe/kcv", this->submap_kcv_, 10);
   dlio::declare_param(this, "odom/submap/keyframe/kcc", this->submap_kcc_, 10);
+  dlio::declare_param(this, "odom/submap/voxelRadius", this->submap_voxel_radius_, 2);
+  dlio::declare_param(this, "odom/submap/kfWindow", this->submap_kf_window_, 20);
 
   // Dense map resolution
   dlio::declare_param(this, "map/dense/filtered", this->densemap_filtered_, true);
@@ -1792,100 +1794,6 @@ void dlio::OdomNode::computeDensity(float density_curr) {
 
 }
 
-void dlio::OdomNode::computeConvexHull() {
-
-  // at least 4 keyframes for convex hull
-  if (this->num_processed_keyframes < 4) {
-    return;
-  }
-
-  // Reuse previous result when keyframe set is unchanged.
-  if (this->convex_hull_last_kf_count_ == this->num_processed_keyframes && !this->keyframe_convex.empty()) {
-    return;
-  }
-
-  // create a pointcloud with points at keyframes
-  pcl::PointCloud<PointType>::Ptr cloud = std::make_shared<pcl::PointCloud<PointType>>();
-
-  std::unique_lock<decltype(this->keyframes_mutex)> lock(this->keyframes_mutex);
-  for (int i = 0; i < this->num_processed_keyframes; i++) {
-    PointType pt;
-    pt.x = this->keyframes[i].first.first[0];
-    pt.y = this->keyframes[i].first.first[1];
-    pt.z = this->keyframes[i].first.first[2];
-    cloud->emplace_back(pt);
-  }
-  lock.unlock();
-
-  // calculate the convex hull of the point cloud
-  this->convex_hull.setInputCloud(cloud);
-
-  // get the indices of the keyframes on the convex hull
-  pcl::PointCloud<PointType>::Ptr convex_points = std::make_shared<pcl::PointCloud<PointType>>();
-  this->convex_hull.reconstruct(*convex_points);
-
-  pcl::PointIndices::Ptr convex_hull_point_idx = std::make_shared<pcl::PointIndices>();
-  this->convex_hull.getHullPointIndices(*convex_hull_point_idx);
-
-  this->keyframe_convex.clear();
-  for (int i=0; i<convex_hull_point_idx->indices.size(); ++i) {
-    this->keyframe_convex.emplace_back(convex_hull_point_idx->indices[i]);
-  }
-  this->convex_hull_last_kf_count_ = this->num_processed_keyframes;
-
-}
-
-void dlio::OdomNode::computeConcaveHull() {
-
-  // at least 5 keyframes for concave hull
-  if (this->num_processed_keyframes < 5) {
-    return;
-  }
-
-  const float alpha_curr = static_cast<float>(this->keyframe_thresh_dist_);
-  constexpr float kAlphaRecomputeEps = 1e-3f;
-  const bool alpha_changed = !this->concave_hull_last_alpha_ ||
-                             std::abs(this->concave_hull_last_alpha_.value() - alpha_curr) > kAlphaRecomputeEps;
-
-  // Recompute only when keyframe set grows or alpha changes enough.
-  if (this->concave_hull_last_kf_count_ == this->num_processed_keyframes &&
-      !alpha_changed &&
-      !this->keyframe_concave.empty()) {
-    return;
-  }
-
-  // create a pointcloud with points at keyframes
-  auto cloud = std::make_shared<pcl::PointCloud<PointType>>();
-
-  std::unique_lock<decltype(this->keyframes_mutex)> lock(this->keyframes_mutex);
-  for (int i = 0; i < this->num_processed_keyframes; i++) {
-    PointType pt;
-    pt.x = this->keyframes[i].first.first[0];
-    pt.y = this->keyframes[i].first.first[1];
-    pt.z = this->keyframes[i].first.first[2];
-    cloud->emplace_back(pt);
-  }
-  lock.unlock();
-
-  // calculate the concave hull of the point cloud
-  this->concave_hull.setInputCloud(cloud);
-
-  // get the indices of the keyframes on the concave hull
-  pcl::PointCloud<PointType>::Ptr concave_points = std::make_shared<pcl::PointCloud<PointType>>();
-  this->concave_hull.reconstruct(*concave_points);
-
-  pcl::PointIndices::Ptr concave_hull_point_idx = std::make_shared<pcl::PointIndices>();
-  this->concave_hull.getHullPointIndices(*concave_hull_point_idx);
-
-  this->keyframe_concave.clear();
-  for (int i=0; i<concave_hull_point_idx->indices.size(); ++i) {
-    this->keyframe_concave.emplace_back(concave_hull_point_idx->indices[i]);
-  }
-  this->concave_hull_last_kf_count_ = this->num_processed_keyframes;
-  this->concave_hull_last_alpha_ = alpha_curr;
-
-}
-
 void dlio::OdomNode::updateKeyframes() {
 
   // calculate difference in pose and rotation to all poses in trajectory
@@ -1998,9 +1906,6 @@ void dlio::OdomNode::setAdaptiveParams() {
 
   this->gicp.setMaxCorrespondenceDistance(den);
 
-  // Concave hull alpha
-  this->concave_hull.setAlpha(this->keyframe_thresh_dist_);
-
 }
 
 void dlio::OdomNode::pushSubmapIndices(const std::vector<float>& dists, int k, const std::vector<int>& frames) {
@@ -2048,29 +1953,19 @@ void dlio::OdomNode::buildSubmap(State vehicle_state) {
   // get indices for top K nearest neighbor keyframe poses
   this->pushSubmapIndices(ds, this->submap_knn_, keyframe_nn);
 
-  // get convex hull indices
-  this->computeConvexHull();
-
-  // get distances for each keyframe on convex hull
-  std::vector<float> convex_ds;
-  for (const auto& c : this->keyframe_convex) {
-    convex_ds.emplace_back(ds[c]);
+  // OctVoxMap spatial query: collect keyframe indices from voxels near current pose.
+  // Replaces ConvexHull + ConcaveHull with O(num_voxels_in_radius) query.
+  {
+    std::vector<int> voxel_kf_indices;
+    this->keyframe_voxel_map_.radiusQueryKfIndices(
+        vehicle_state.p, this->submap_voxel_radius_, voxel_kf_indices);
+    // Filter: only keep indices within processed range
+    for (int idx : voxel_kf_indices) {
+      if (idx >= 0 && idx < this->num_processed_keyframes) {
+        this->submap_kf_idx_curr.emplace_back(idx);
+      }
+    }
   }
-
-  // get indices for top kNN for convex hull
-  this->pushSubmapIndices(convex_ds, this->submap_kcv_, this->keyframe_convex);
-
-  // get concave hull indices
-  this->computeConcaveHull();
-
-  // get distances for each keyframe on concave hull
-  std::vector<float> concave_ds;
-  for (const auto& c : this->keyframe_concave) {
-    concave_ds.emplace_back(ds[c]);
-  }
-
-  // get indices for top kNN for concave hull
-  this->pushSubmapIndices(concave_ds, this->submap_kcc_, this->keyframe_concave);
 
   // sort current and previous submap kf list of indices
   std::sort(this->submap_kf_idx_curr.begin(), this->submap_kf_idx_curr.end());
@@ -2079,6 +1974,16 @@ void dlio::OdomNode::buildSubmap(State vehicle_state) {
   // remove duplicate indices
   auto last = std::unique(this->submap_kf_idx_curr.begin(), this->submap_kf_idx_curr.end());
   this->submap_kf_idx_curr.erase(last, this->submap_kf_idx_curr.end());
+
+  // Temporal window: discard keyframes older than the last N frames.
+  // Prevents frontend GICP from matching to pre-loop-closure geometry
+  // and causing odometry jumps. 0 = disabled (no window).
+  if (this->submap_kf_window_ > 0 && this->num_processed_keyframes > this->submap_kf_window_) {
+    int min_idx = this->num_processed_keyframes - this->submap_kf_window_;
+    auto erase_start = std::lower_bound(
+        this->submap_kf_idx_curr.begin(), this->submap_kf_idx_curr.end(), min_idx);
+    this->submap_kf_idx_curr.erase(this->submap_kf_idx_curr.begin(), erase_start);
+  }
 
   // check if submap has changed from previous iteration
   if (this->submap_kf_idx_curr != this->submap_kf_idx_prev){
@@ -2127,6 +2032,16 @@ void dlio::OdomNode::buildKeyframesAndSubmap(State vehicle_state) {
 
     lock.lock();
     this->keyframes[i].second = transformed_keyframe;
+
+    // Insert keyframe position into OctVoxMap for spatial submap selection
+    {
+      KeyframePoint kfp;
+      kfp.p = this->keyframes[i].first.first;
+      kfp.idx = i;
+      typename VoxelMap::Points pts;
+      pts.push_back(kfp);
+      this->keyframe_voxel_map_.insert(pts);
+    }
 
     if (should_publish_keyframes) {
       pending_keyframes_to_publish.emplace_back(this->keyframes[i], this->keyframe_timestamps[i]);

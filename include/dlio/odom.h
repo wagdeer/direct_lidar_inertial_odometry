@@ -44,9 +44,25 @@
 #include <pcl/filters/crop_box.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/statistical_outlier_removal.h>
-#include <pcl/surface/concave_hull.h>
-#include <pcl/surface/convex_hull.h>
 #include <pcl_conversions/pcl_conversions.h>
+
+#include "dlio/oct_vox_map.hpp"
+
+// ── KeyframePoint: Point type for OctVoxMap that carries keyframe index ──
+struct KeyframePoint {
+  Eigen::Vector3f p;
+  int idx = -1;
+
+  float x() const { return p.x(); }
+  float y() const { return p.y(); }
+  float z() const { return p.z(); }
+  float squaredNorm() const { return p.squaredNorm(); }
+  auto array() const { return p.array(); }
+};
+inline KeyframePoint operator-(const KeyframePoint& a, const KeyframePoint& b) { return {a.p - b.p, -1}; }
+inline KeyframePoint operator*(const KeyframePoint& a, float s)   { return {a.p * s, a.idx}; }
+inline KeyframePoint operator+(const KeyframePoint& a, const KeyframePoint& b) { return {a.p + b.p, a.idx}; }
+inline KeyframePoint operator/(const KeyframePoint& a, float s)   { return {a.p / s, a.idx}; }
 
 class dlio::OdomNode: public rclcpp::Node {
 
@@ -112,8 +128,6 @@ private:
   sensor_msgs::msg::Imu::SharedPtr transformImu(const sensor_msgs::msg::Imu::SharedPtr& imu);
 
   void updateKeyframes();
-  void computeConvexHull();
-  void computeConcaveHull();
   void pushSubmapIndices(const std::vector<float>& dists, int k, const std::vector<int>& frames);
   void buildSubmap(State vehicle_state);
   void buildKeyframesAndSubmap(State vehicle_state);
@@ -201,13 +215,10 @@ private:
   // Keyframes
   int num_processed_keyframes;
 
-  pcl::ConvexHull<PointType> convex_hull;
-  pcl::ConcaveHull<PointType> concave_hull;
-  std::vector<int> keyframe_convex;
-  std::vector<int> keyframe_concave;
-  int convex_hull_last_kf_count_ = -1;
-  int concave_hull_last_kf_count_ = -1;
-  std::optional<float> concave_hull_last_alpha_;
+  // OctVoxMap: O(1) incremental spatial voxel map,
+  // replaces PCL ConvexHull/ConcaveHull for submap keyframe selection.
+  using VoxelMap = dlio::OctVoxMap<KeyframePoint, float>;
+  VoxelMap keyframe_voxel_map_;
 
   // Submap
   pcl::PointCloud<PointType>::ConstPtr submap_cloud;
@@ -360,6 +371,8 @@ private:
   int submap_knn_;
   int submap_kcv_;
   int submap_kcc_;
+  int submap_voxel_radius_;
+  int submap_kf_window_;
 
   bool densemap_filtered_;
   bool wait_until_move_;
